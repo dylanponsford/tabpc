@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import torch
 
 from .preprocessor import Preprocessor
@@ -12,7 +13,7 @@ class ToTensor(Preprocessor):
 
     def transform(self, df: pd.DataFrame) -> torch.Tensor:
         metadata = {c: pd.api.types.infer_dtype(df[c]) for c in df.columns}
-        x = torch.from_numpy(df.values.astype("float32")).float()
+        x = torch.from_numpy(df.fillna(np.nan).values.astype("float32")).float()
         x.metadata = metadata
         if self.verbose:
             print("Types:")

@@ -59,7 +59,7 @@ class ProbabilisticCircuit(Model):
         )
 
     def make_circuit(self, X_train: torch.Tensor, metadata: dict):
-        input_layer = auto_input_layers(X_train, metadata=metadata)
+        input_layer = auto_input_layers(torch.nan_to_num(X_train, nan=0.0), metadata=metadata)
 
         symbolic_circuit = tabular_data(
             region_graph=(

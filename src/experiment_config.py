@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 
 from src.nn.training import loss_plot
@@ -22,6 +23,8 @@ class ExperimentConfig:
     name: str
     device: str
     seed: int | None = None
+    train_mask_path: str | None = None
+    test_mask_path: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -30,16 +33,24 @@ class ExperimentConfig:
             "model": self.model.to_dict(),
             "device": str(self.device),
             "seed": self.seed,
+            "train_mask_path": self.train_mask_path,
+            "test_mask_path": self.test_mask_path
         }
 
     def generated_data_path(self, folder: Path) -> Path:
         return folder / GENERATED_DATA_NAME
 
     def get_train_data(self) -> pd.DataFrame:
+        dataset_path = self.dataset_path
         if os.path.isdir(self.dataset_path):
-            df_train = pd.read_csv(f"{self.dataset_path}/train.csv")
-        else:
-            df_train = pd.read_csv(self.dataset_path)
+            dataset_path = os.path.join(dataset_path, "train.csv")
+
+        df_train = pd.read_csv(dataset_path)
+
+        if self.train_mask_path:
+            train_mask = np.load(self.train_mask_path)
+            df_train = df_train.mask(train_mask)
+
         return df_train
 
     def get_test_data(self) -> pd.DataFrame:
@@ -49,6 +60,10 @@ class ExperimentConfig:
             raise ValueError(
                 "Test data is only available for datasets stored in a directory."
             )
+
+        if self.test_mask_path:
+            test_mask = np.load(self.test_mask_path)
+            df_test = df_test.mask(test_mask)
         return df_test
 
     def generate(self, folder: Path, wandb_run, use_codecarbon: bool = False) -> Tuple[str, dict]:
@@ -102,4 +117,6 @@ def load_experiment(experiment_path: str | Path) -> ExperimentConfig:
         model=model,
         device=data["device"],
         seed=data.get("seed", None),
+        train_mask_path=data.get("train_mask_path", None),
+        test_mask_path=data.get("test_mask_path", None)
     )

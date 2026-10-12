@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from sklearn.preprocessing import OrdinalEncoder
 
 from src.preprocessors.preprocessor import Preprocessor
@@ -37,6 +38,10 @@ class StringToInt(Preprocessor):
             encoded_values = oe.transform(df[[col]]).flatten()
             # Replace -1 (unseen categories) with None
             encoded_values[encoded_values == -1] = None
+            # Replace any nan values with None
+            if "nan" in list(oe.categories_[0]):
+                nan_encoding = list(oe.categories_[0]).index("nan")
+                encoded_values[encoded_values == nan_encoding] = None
             df[col] = encoded_values
             df[col] = df[col].astype("category")
         return df
