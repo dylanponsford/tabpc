@@ -29,12 +29,12 @@ def get(d: dict, keys: tuple):
         return None
     return d
 
-def conditional_sample(
+def approximate_MAP(
         experiment_path: str,
         overwrite: bool = False,
         device = None,
         n_samples: int = 1,
-        cond_batch_size: int = 10, # Conditional batch size has been chosen to fit on our GPUs, but can be tuned for better performance
+        cond_batch_size: int = 10, # Cond batch size has been chosen to fit on our GPUs, but can be tuned for better performance
         use_train_set_for_conditioning: bool = False # Whether to use the train set for conditioning (if False, use the test set)
         ):
     """
@@ -45,30 +45,37 @@ def conditional_sample(
     exp_config: ExperimentConfig = load_experiment(experiment_path)
 
     if exp_config.train_mask_path is None:
-        raise ValueError("Mask path should be specified in experiment config for conditional sampling.")
+        raise ValueError("Mask path should be specified in experiment config \
+                         for imputation.")
     train_mask_path = exp_config.train_mask_path
 
     mask_path_items = train_mask_path.split(os.sep)
     mask_idx = int(mask_path_items[-1].strip("train_mask_").strip(".npy"))
     mask_type = mask_path_items[-2]
     missingness_rate = mask_path_items[-3].strip("rate")
-    
+
     # create folder for samples
     samples_path = os.path.join(experiment_path, f"imputed_samples")
     os.makedirs(samples_path, exist_ok=True)
 
-    csv_samples_path = os.path.join(samples_path, f"samples_{mask_type}_{missingness_rate}_{mask_idx}")
+    csv_samples_path = os.path.join(
+        samples_path,
+        f"samples_{mask_type}_{missingness_rate}_{mask_idx}"
+    )
     os.makedirs(csv_samples_path, exist_ok=True)
-    
-    print(f"Sampling {n_samples} times from model...")
-    
+
+    print(f"Computing aMAP {n_samples} times from model...")
+
     # load model
     model = exp_config.model
-    
+
     if isinstance(model, ProbabilisticCircuit) or isinstance(model, ShallowMixture):
         model.circuit.to(device)
 
-    times_file_name = os.path.join(samples_path, f"generation_times_{mask_type}_{missingness_rate}_{mask_idx}.json")
+    times_file_name = os.path.join(
+        samples_path,
+        f"generation_times_{mask_type}_{missingness_rate}_{mask_idx}.json"
+    )
 
     # Overwrite generation times
     if overwrite and os.path.exists(times_file_name):
@@ -90,28 +97,34 @@ def conditional_sample(
     base_df = pd.read_csv(os.path.join(dataset_path, f"{dataset_split}.csv"))
     gt_values = base_df.mask(~df_to_mask.isna())
     gt_values.to_csv(os.path.join(csv_samples_path, f"gt_{dataset_split}.csv"), index=False)
-    
+
     # Generate a dataset of the same size as the chosen conditioning set (test or train)
     num_to_generate = len(df_to_mask)
 
     for i in range(n_samples):
         if use_train_set_for_conditioning:
-            name = f"train_sample_{i}"
+            name = f"train_amap_{i}"
         else:
-            name = f"test_sample_{i}"
+            name = f"test_amap_{i}"
         if not overwrite and os.path.exists(os.path.join(csv_samples_path, f"{name}.csv")):
-            print(f"Sample {i} already exists, skipping...")
+            print(f"Imputation {i} already exists, skipping...")
             continue
-        
+
         print(f"Generating sample {i+1}/{n_samples}...")
         with Timer() as generation_timer:
             if not isinstance(model, ProbabilisticCircuit):
-                raise ValueError("Conditional generation is only supported for ProbabilisticCircuit models.")
+                raise ValueError("Approximate MAP is only supported \
+                                 for ProbabilisticCircuit models.")
 
-            df = model.conditional_generation(device=device, batch_size=cond_batch_size, condition=df_to_mask, num_to_generate=num_to_generate)
-            
+            df = model.approximate_map(
+                device=device,
+                batch_size=cond_batch_size,
+                condition=df_to_mask,
+                num_to_generate=num_to_generate
+            )
+
             # Save generated samples to csv
-            df.to_csv(os.path.join(csv_samples_path, f"{name}.csv"), index=False)
+            df.to_csv(os.path.join(csv_samples_path, f"{name}_amap.csv"), index=False)
 
         with edit_json(filename=times_file_name) as data:
             data[i] = generation_timer.elapsed
@@ -166,7 +179,7 @@ if __name__ == "__main__":
     if args.sample:
         for experiment_path in experiment_paths:
             try:
-                conditional_sample(
+                approximate_MAP(
                     experiment_path,
                     n_samples=1,
                     overwrite=args.overwrite,
