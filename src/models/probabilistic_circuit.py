@@ -304,7 +304,11 @@ class ProbabilisticCircuit(Model):
 
 
     def approximate_map(
-        self, *, condition: pd.DataFrame, device: str, batch_size: int, num_to_generate: int | None = None
+        self, *,
+        condition: pd.DataFrame,
+        device: str,
+        batch_size: int,
+        num_to_generate: int | None = None,
     ) -> pd.DataFrame:
         tensor_condition = (
                     self.preprocessor.transform(condition)
@@ -318,13 +322,13 @@ class ProbabilisticCircuit(Model):
 
         if num_to_generate is None:
             num_to_generate = self.original_size
-            
+
         if device is not None:
             self.circuit.to(device)
 
         amap_query = ApproximateMAPQuery(self.circuit)
         torch.cuda.empty_cache()
-        
+
         torch.cuda.memory.reset_peak_memory_stats()
 
         samples = torch.zeros((num_to_generate, self.num_features), device=device)
