@@ -7,7 +7,7 @@ import torch
 import tqdm
 from torch.utils.flop_counter import FlopCounterMode
 
-from cirkit.backend.torch.queries import IntegrateQuery, SamplingQuery
+from cirkit.backend.torch.queries import IntegrateQuery, SamplingQuery, ApproximateMAPQuery
 from cirkit.pipeline import PipelineContext, compile
 from cirkit.templates import utils
 from cirkit.templates.data_modalities import tabular_data
@@ -301,6 +301,66 @@ class ProbabilisticCircuit(Model):
         # assert ((df_samples == condition_evidence) | ~masked_evidence.isna()).all().all(), "Conditioned values do not match the generated samples."
 
         return self.restore_original_types(df_samples)
+
+
+    def approximate_map(
+        self, *, condition: pd.DataFrame, device: str, batch_size: int, num_to_generate: int | None = None
+    ) -> pd.DataFrame:
+        tensor_condition = (
+                    self.preprocessor.transform(condition)
+                    if self.preprocessor is not None
+                    else condition
+                )
+
+        if batch_size is None:
+            batch_size = self.optimal_batch_size_for_sampling(backward=False)
+            print(f"Using optimal batch size for sampling: {batch_size}")
+
+        if num_to_generate is None:
+            num_to_generate = self.original_size
+            
+        if device is not None:
+            self.circuit.to(device)
+
+        amap_query = ApproximateMAPQuery(self.circuit)
+        torch.cuda.empty_cache()
+        
+        torch.cuda.memory.reset_peak_memory_stats()
+
+        samples = torch.zeros((num_to_generate, self.num_features), device=device)
+        if condition is not None:
+            condition = tensor_condition.to(device)
+            observed_vars = ~condition.isnan()
+
+        num_batches = math.ceil(num_to_generate / batch_size)
+
+        # import pdb; pdb.set_trace()
+
+        for i in tqdm.tqdm(range(num_batches), desc="Generating samples"):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, num_to_generate)
+            num_samples = end - start
+            with torch.no_grad():
+                if num_samples > 0:
+                    if condition is None:
+                        samples[start:end] = amap_query()
+                    else:
+                        samples[start:end] = amap_query(
+                            evidence=condition[start:end],
+                            ev_mask=observed_vars[start:end]
+                        )
+
+        torch.cuda.empty_cache()
+        amap_tensor = samples[: num_to_generate].cpu()
+
+        df_amap = (
+            self.preprocessor.reverse_transform(amap_tensor)
+            if self.preprocessor is not None
+            else amap_tensor
+        )
+
+        return self.restore_original_types(df_amap)
+
 
     def _generate(
         self,
