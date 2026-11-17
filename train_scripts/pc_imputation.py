@@ -1,4 +1,6 @@
 import sys
+import os
+import re
 
 sys.path.append(".")
 sys.path.append("cirkit")
@@ -20,6 +22,41 @@ from src.util import get_available_device
 
 import argparse
 
+# Pattern to extract missingness details from mask path
+# Expects: .../masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
+# Example: data/adult/masks/rate30/MAR/test_mask_0.npy
+MASK_PATTERN = re.compile(
+    r'masks/'
+    r'rate(?P<rate>\d+)/'
+    r'(?P<type>[^/]+)/'
+    r'(?P<split>train|test)_mask_(?P<idx>\d+)\.npy'
+)
+
+def extract_missingness_details(mask_path: str) -> dict | None:
+    """
+    Extract missingness details from mask file path.
+    
+    Args:
+        mask_path: Path to mask file (e.g., data/adult/masks/rate30/MAR/test_mask_0.npy)
+    
+    Returns:
+        Dictionary with keys: 'rate', 'type', 'idx', 'split'
+        Returns None if pattern doesn't match
+    """
+    mask_path = os.path.normpath(mask_path)
+    match = MASK_PATTERN.search(mask_path)
+    
+    if match:
+        return {
+            'rate': int(match.group('rate')),
+            'type': match.group('type'),
+            'idx': int(match.group('idx')),
+            'split': match.group('split')
+        }
+    
+    return None
+
+
 def main(
         path: str,
         num_units: int,
@@ -29,11 +66,19 @@ def main(
         target_folder: str,
         train_mask_path: str,
         test_mask_path: str,
+        qn_invertible: bool = False,
     ) -> None:
     WANDB = False
     DO_PLOTS = False
     DO_METRICS = False
+    
+    # Build POSTFIX with missingness details if available
     POSTFIX = '_imputation'
+    if train_mask_path:
+        mask_info = extract_missingness_details(train_mask_path)
+        if mask_info:
+            POSTFIX = f"_imputation_{mask_info['type']}_rate{mask_info['rate']}_mask{mask_info['idx']}"
+    
     DEVICE = get_available_device()
 
     bin_for_mi = 15
@@ -60,6 +105,11 @@ def main(
 
     NAME = 'pc_' + DATASET_NAME + '_' + str(num_units) + '_' + str(batch_size) + '_' + str(lr) + POSTFIX
     print(f"Running experiment with name: {NAME} on dataset: {DATASET_PATH}")
+    
+    if train_mask_path:
+        mask_info = extract_missingness_details(train_mask_path)
+        if mask_info:
+            print(f"Missingness: {mask_info['type']}, Rate: {mask_info['rate']}%, Mask idx: {mask_info['idx']}")
 
     experiment = ExperimentConfig(
         name=NAME,
@@ -80,7 +130,7 @@ def main(
                                                                 int_max_states=None),
                                                 NanHandler(handle_inflated_values=handle_inflated_values, handle_missing_values=False),
                                                 Dequantization(dequantize=True, dequantize_all_floats=dequantize_all_floats),
-                                                QuantileNormalizer() if quantile_normalizer else Standardizer(),
+                                                QuantileNormalizer(invertible=qn_invertible) if quantile_normalizer else Standardizer(),
                                                 StringToInt(),
                                                 ToTensor(),
                                                 ],
