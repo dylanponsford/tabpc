@@ -131,19 +131,36 @@ def approximate_MAP(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Use TabPC models for imputation of missing data.')
-    parser.add_argument('--models-dir', type=str, help='Target directory for trained models', default=COND_MODELS_DIR)
-    parser.add_argument('--seed', help='Random seed (int or None; default: 0)', default=0)
-    parser.add_argument('--dataset-dir', type=str, required=True, help='Folder of the dataset to run the experiment on.')
-    parser.add_argument('--mask-dir', type=str, required=True, help='Folder of the missingness masks (train and test) to run the experiment on.')
-    parser.add_argument('--mask-idx', type=int, required=True, help='Index of the missingness masks to use. (0-9)')
-    parser.add_argument('--train', '-t', action='store_true', help='Whether to run the training of models (default: False)')
-    parser.add_argument('--sample', '-s', action='store_true', help='Whether to run the conditional sampling (default: False)')
-    parser.add_argument('--overwrite', '-o', action='store_true', help='Whether to overwrite existing samples and times (default: False)')
-    parser.add_argument('--cond-batch-size', type=int, default=10, help='Batch size for conditional sampling (default: 10, can be tuned for better performance)')
-    parser.add_argument('--use-train-set-for-conditioning', action='store_true', help='Whether to use the train set for conditioning (default: False, which means using the test set for conditioning)')
-    parser.add_argument('--num-units', type=int, default=1024, help='Number of units for the trained PC')
-    parser.add_argument('--batch-size', type=int, default=512, help='Batch size for the trained PC')
-    parser.add_argument('--lr', type=float, default=0.25, help='Learning rate for the trained PC')
+    parser.add_argument('--models-dir', type=str,
+                        help='Target directory for trained models', default=COND_MODELS_DIR)
+    parser.add_argument('--seed', default=0,
+                        help='Random seed (int or None; default: 0)')
+    parser.add_argument('--dataset-dir', type=str, required=True,
+                        help='Folder of the dataset to run the experiment on.')
+    parser.add_argument('--mask-dir', type=str, required=True,
+                        help='Folder of the missingness masks (train and test) to run the experiment on.')
+    parser.add_argument('--imputed-data-dir', type=str,
+                        help="Folder in which to save imputed data (according to pre-defined structure.)")
+    parser.add_argument('--mask-idx', type=int, required=True,
+                        help='Index of the missingness masks to use. (0-9)')
+    parser.add_argument('--train', '-t', action='store_true',
+                        help='Whether to run the training of models (default: False)')
+    parser.add_argument('--sample', '-s', action='store_true',
+                        help='Whether to run the conditional sampling (default: False)')
+    parser.add_argument('--overwrite', '-o', action='store_true',
+                        help='Whether to overwrite existing samples and times (default: False)')
+    parser.add_argument('--cond-batch-size', type=int, default=10,
+                        help='Batch size for conditional sampling (default: 10, can be tuned for better performance)')
+    parser.add_argument('--use-train-set-for-conditioning', action='store_true',
+                        help='Whether to use the train set for conditioning (default: False, so using the test set for conditioning)')
+    parser.add_argument('--num-units', type=int, default=1024,
+                        help='Number of units for the trained PC')
+    parser.add_argument('--batch-size', type=int, default=512,
+                        help='Batch size for the trained PC')
+    parser.add_argument('--lr', type=float, default=0.25,
+                        help='Learning rate for the trained PC')
+    parser.add_argument('--qn-invertible', action='store_true',
+                        help='Whether to make the quantile normaliser transformation invertible.')
 
     args = parser.parse_args()
 
@@ -170,6 +187,7 @@ if __name__ == "__main__":
             target_folder=args.models_dir,
             train_mask_path=train_mask_path,
             test_mask_path=test_mask_path,
+            qn_invertible=args.qn_invertible,
         )
         free_memory()
 
