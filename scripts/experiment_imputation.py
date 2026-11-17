@@ -124,7 +124,7 @@ def approximate_MAP(
             )
 
             # Save generated samples to csv
-            df.to_csv(os.path.join(csv_samples_path, f"{name}_amap.csv"), index=False)
+            df.to_csv(os.path.join(csv_samples_path, f"{name}.csv"), index=False)
 
         with edit_json(filename=times_file_name) as data:
             data[i] = generation_timer.elapsed
