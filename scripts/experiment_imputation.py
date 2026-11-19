@@ -1,6 +1,7 @@
 import os
 import gc
 import sys
+import re
 import argparse
 import pandas as pd
 import numpy as np
@@ -8,7 +9,7 @@ import torch
 
 sys.path.append(".")
 sys.path.append("cirkit")
-from train_scripts.pc_imputation import main as train_pc
+from train_scripts.pc_imputation import main as train_pc, extract_missingness_details
 from src.util import Timer, get_available_device, edit_json
 from src.experiment_config import ExperimentConfig, load_experiment
 from src.models.probabilistic_circuit import ProbabilisticCircuit
@@ -16,26 +17,28 @@ from src.models.shallow_mixture import ShallowMixture
 
 COND_MODELS_DIR = 'artifacts/tabpc_imputation'
 
+# Pattern to extract missingness details from mask path
+# Expects: .../masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
+# Example: data/adult/masks/rate30/MAR/test_mask_0.npy
+MASK_PATTERN = re.compile(
+    r'masks/'
+    r'rate(?P<rate>\d+)/'
+    r'(?P<type>[^/]+)/'
+    r'(?P<split>train|test)_mask_(?P<idx>\d+)\.npy'
+)
+
 def free_memory():
     torch.cuda.empty_cache()
     gc.collect()
-
-
-def get(d: dict, keys: tuple):
-    try:
-        for key in keys:
-            d = d[key]
-    except KeyError:
-        return None
-    return d
 
 def approximate_MAP(
         experiment_path: str,
         overwrite: bool = False,
         device = None,
-        n_samples: int = 1,
-        cond_batch_size: int = 10, # Cond batch size has been chosen to fit on our GPUs, but can be tuned for better performance
-        use_train_set_for_conditioning: bool = False # Whether to use the train set for conditioning (if False, use the test set)
+        cond_batch_size: int = 10, # Cond batch size has been chosen to fit on our GPUs
+        use_train_set_for_conditioning: bool = False,
+        imputed_dir: str | None = None,
+        method_name: str = "tabpc",
         ):
     """
     TODO: write docstring
@@ -55,7 +58,7 @@ def approximate_MAP(
     missingness_rate = mask_path_items[-3].strip("rate")
 
     # create folder for samples
-    samples_path = os.path.join(experiment_path, f"imputed_samples")
+    samples_path = os.path.join(experiment_path, "imputed_samples")
     os.makedirs(samples_path, exist_ok=True)
 
     csv_samples_path = os.path.join(
@@ -64,7 +67,7 @@ def approximate_MAP(
     )
     os.makedirs(csv_samples_path, exist_ok=True)
 
-    print(f"Computing aMAP {n_samples} times from model...")
+    print(f"Computing aMAP from model...")
 
     # load model
     model = exp_config.model
@@ -101,20 +104,19 @@ def approximate_MAP(
     # Generate a dataset of the same size as the chosen conditioning set (test or train)
     num_to_generate = len(df_to_mask)
 
-    for i in range(n_samples):
-        if use_train_set_for_conditioning:
-            name = f"train_amap_{i}"
-        else:
-            name = f"test_amap_{i}"
-        if not overwrite and os.path.exists(os.path.join(csv_samples_path, f"{name}.csv")):
-            print(f"Imputation {i} already exists, skipping...")
-            continue
-
-        print(f"Generating sample {i+1}/{n_samples}...")
+    if use_train_set_for_conditioning:
+        name = "train_amap"
+    else:
+        name = "test_amap"
+    if not overwrite and os.path.exists(os.path.join(csv_samples_path, f"{name}.csv")):
+        print(f"Imputation already exists, skipping...")
+        df = pd.read_csv(os.path.join(csv_samples_path, f"{name}.csv"))
+    else:
+        print(f"Generating imputation...")
         with Timer() as generation_timer:
             if not isinstance(model, ProbabilisticCircuit):
                 raise ValueError("Approximate MAP is only supported \
-                                 for ProbabilisticCircuit models.")
+                                    for ProbabilisticCircuit models.")
 
             df = model.approximate_map(
                 device=device,
@@ -127,7 +129,35 @@ def approximate_MAP(
             df.to_csv(os.path.join(csv_samples_path, f"{name}.csv"), index=False)
 
         with edit_json(filename=times_file_name) as data:
-            data[i] = generation_timer.elapsed
+            data[0] = generation_timer.elapsed
+
+        # Also save data to imputed-data-dir if specified after generation
+        if imputed_dir is not None:
+            missingness_details = extract_missingness_details(train_mask_path)
+            dataset = missingness_details['dataset']
+            split = missingness_details['split']
+            missingness_rate = missingness_details['rate']
+            missingness_type = missingness_details['type']
+            mask_idx = missingness_details['idx']
+            imputed_filename = f"imputed_{method_name}_{dataset}_{split}_{missingness_type}_{missingness_rate}_{mask_idx}.csv"
+            imputed_save_dir = os.path.join(
+                imputed_dir,
+                dataset,
+                split,
+                missingness_type,
+                f"rate{missingness_rate}",
+                f"mask_{mask_idx}",
+                method_name
+            )
+            imputed_save_path = os.path.join(
+                imputed_save_dir,
+                imputed_filename
+            )
+            if os.path.exists(imputed_save_path) and not overwrite:
+                print("Skipping existing generated file!")
+            else:
+                os.makedirs(imputed_save_dir, exist_ok=True)
+                df.to_csv(imputed_save_path, index=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Use TabPC models for imputation of missing data.')
@@ -135,13 +165,13 @@ if __name__ == "__main__":
                         help='Target directory for trained models', default=COND_MODELS_DIR)
     parser.add_argument('--seed', default=0,
                         help='Random seed (int or None; default: 0)')
-    parser.add_argument('--dataset-dir', type=str, required=True,
+    parser.add_argument('--dataset-dir', type=str,
                         help='Folder of the dataset to run the experiment on.')
-    parser.add_argument('--mask-dir', type=str, required=True,
+    parser.add_argument('--mask-dir', type=str,
                         help='Folder of the missingness masks (train and test) to run the experiment on.')
-    parser.add_argument('--imputed-data-dir', type=str,
+    parser.add_argument('--imputed-data-dir', default=None,
                         help="Folder in which to save imputed data (according to pre-defined structure.)")
-    parser.add_argument('--mask-idx', type=int, required=True,
+    parser.add_argument('--mask-idx', type=int,
                         help='Index of the missingness masks to use. (0-9)')
     parser.add_argument('--train', '-t', action='store_true',
                         help='Whether to run the training of models (default: False)')
@@ -161,23 +191,26 @@ if __name__ == "__main__":
                         help='Learning rate for the trained PC')
     parser.add_argument('--qn-invertible', action='store_true',
                         help='Whether to make the quantile normaliser transformation invertible.')
+    parser.add_argument('--method-name', type=str, default='tabpc',
+                        help='Name to display in imputation results (default: "tabpc")')
+    parser.add_argument('--no-iv', action='store_true',
+                        help='Whether to drop the inflated value handling preprocessor.')
 
     args = parser.parse_args()
-
-    # First get masked train and test datasets based on dataset-dir and mask-dir
-    train_mask_filename = f'train_mask_{args.mask_idx}.npy'
-    test_mask_filename = f'test_mask_{args.mask_idx}.npy'
-
-    # Masks are stored as .npy files
-    train_mask_path = os.path.join(args.mask_dir, train_mask_filename)
-    test_mask_path = os.path.join(args.mask_dir, test_mask_filename)
 
     # Create specified folders if they don't exist
     os.makedirs(args.models_dir, exist_ok=True)
     # 1) Train SotA TabPC models so that they are in a separate folder
     if args.train:
+        # First get masked train and test datasets based on dataset-dir and mask-dir
+        train_mask_filename = f'train_mask_{args.mask_idx}.npy'
+        test_mask_filename = f'test_mask_{args.mask_idx}.npy'
+
+        # Masks are stored as .npy files
+        train_mask_path = os.path.join(args.mask_dir, train_mask_filename)
+        test_mask_path = os.path.join(args.mask_dir, test_mask_filename)
         dataset_dir = args.dataset_dir
-        print(f"Training TabPC on ...")
+        print(f"Training TabPC on {dataset_dir}")
         train_pc(
             path=args.dataset_dir,
             num_units=args.num_units,
@@ -188,6 +221,7 @@ if __name__ == "__main__":
             train_mask_path=train_mask_path,
             test_mask_path=test_mask_path,
             qn_invertible=args.qn_invertible,
+            no_iv=args.no_iv,
         )
         free_memory()
 
@@ -199,11 +233,12 @@ if __name__ == "__main__":
             try:
                 approximate_MAP(
                     experiment_path,
-                    n_samples=1,
                     overwrite=args.overwrite,
                     cond_batch_size=args.cond_batch_size,
-                    use_train_set_for_conditioning=args.use_train_set_for_conditioning
-                    )
+                    use_train_set_for_conditioning=args.use_train_set_for_conditioning,
+                    imputed_dir=args.imputed_data_dir,
+                    method_name=args.method_name,
+                )
             except Exception as e:
                 print(f"Error during conditional sampling for experiment {experiment_path}: {e}")
             free_memory()
