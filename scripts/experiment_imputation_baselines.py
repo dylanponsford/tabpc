@@ -4,31 +4,47 @@ Imputation Baselines - Runner Script
 Runs baseline imputation methods using hyperimpute and saves imputed datasets.
 For evaluation of imputed datasets (from any source), use evaluate_imputation.py.
 
+Directory structure for saved imputed datasets:
+    imputed_root/
+    └── {dataset}/
+        └── {split}/
+            └── {missingness_type}/
+                └── {rate}/
+                    └── {mask_idx}/
+                        └── {method}/
+                            └── imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
+
+Example:
+    artifacts/imputed/adult/test/MCAR/rate30/mask_0/missforest/imputed_missforest_adult_MCAR_30_0.csv
+
 Usage:
-    # Run imputation methods and save datasets
+    # Run imputation methods and save datasets in structured directory
     python experiment_imputation_baselines.py \
-        --dataset-dir /path/to/dataset \
-        --mask-dir /path/to/masks \
+        --data-root data \
+        --dataset adult \
+        --mask-type MCAR \
+        --rate 30 \
         --mask-idx 0 \
-        --imputed-dir /path/to/save/imputed \
+        --imputed-dir artifacts/imputed \
         --methods mean median mice \
         --seed 42
     
     # Evaluate existing imputed datasets
     python evaluate_imputation.py \
-        --dataset-dir /path/to/dataset \
-        --mask-dir /path/to/masks \
-        --mask-idx 0 \
-        --imputed-dir /path/to/imputed/datasets \
-        --output-dir /path/to/metrics \
+        --imputed-dir artifacts/imputed \
+        --data-root data \
+        --output-dir results \
+        --aggregate \
         --seed 42
 """
 
 import os
+import re
 import argparse
 import gc
 import json
 from typing import Dict, List, Tuple, Optional, Any
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -47,6 +63,17 @@ DEEP_LEARNING_METHODS = ['gain', 'miwae', 'vaec']
 DEFAULT_SEED = 42
 DEFAULT_DEVICE = 'cpu'
 
+# Pattern to extract missingness details from mask path
+# Expects: .../{dataset}/masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
+# Example: data/adult/masks/rate30/MCAR/test_mask_0.npy
+MASK_PATTERN = re.compile(
+    r'(?P<dataset>[^/]+)/'
+    r'masks/'
+    r'rate(?P<rate>\d+)/'
+    r'(?P<type>[^/]+)/'
+    r'(?P<split>train|test)_mask_(?P<idx>\d+)\.npy'
+)
+
 
 def free_memory():
     """Free GPU memory."""
@@ -58,23 +85,66 @@ def free_memory():
     gc.collect()
 
 
+def extract_missingness_details(mask_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract missingness details and dataset name from mask file path.
+    
+    Args:
+        mask_path: Path to mask file
+    
+    Returns:
+        Dictionary with keys: 'dataset', 'rate', 'type', 'idx', 'split'
+        Returns None if pattern doesn't match
+    """
+    mask_path = os.path.normpath(mask_path)
+    match = MASK_PATTERN.search(mask_path)
+    
+    if match:
+        return {
+            'dataset': match.group('dataset'),
+            'rate': int(match.group('rate')),
+            'type': match.group('type'),
+            'idx': int(match.group('idx')),
+            'split': match.group('split')
+        }
+    
+    return None
+
+
 def load_data_and_masks(
-    dataset_dir: str,
-    mask_dir: str,
+    data_root: str,
+    dataset: str,
+    mask_type: str,
+    rate: int,
     mask_idx: int,
-    use_train_set: bool = False
+    split: str
 ) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, str]:
-    """Load dataset and masks."""
-    split_name = "train" if use_train_set else "test"
-    mask_filename = f"{split_name}_mask_{mask_idx}.npy"
+    """
+    Load dataset and masks from structured directories.
+    
+    Args:
+        data_root: Root data directory (e.g., data/)
+        dataset: Dataset name (e.g., adult)
+        mask_type: Missingness type (e.g., MCAR, MAR)
+        rate: Missingness rate (e.g., 30)
+        mask_idx: Mask index (e.g., 0)
+        split: 'train' or 'test'
+    
+    Returns:
+        df_masked, df_complete, mask, split_name
+    """
+    dataset_dir = os.path.join(data_root, dataset)
+    mask_dir = os.path.join(data_root, dataset, "masks", f"rate{rate}", mask_type)
+    
+    dataset_path = os.path.join(dataset_dir, f"{split}.csv")
+    mask_filename = f"{split}_mask_{mask_idx}.npy"
     mask_path = os.path.join(mask_dir, mask_filename)
-    dataset_path = os.path.join(dataset_dir, f"{split_name}.csv")
     
     df_complete = pd.read_csv(dataset_path)
     mask = np.load(mask_path)
     df_masked = df_complete.mask(mask)
     
-    return df_masked, df_complete, mask, split_name
+    return df_masked, df_complete, mask, split
 
 
 def get_column_types(df: pd.DataFrame, info_path: Optional[str] = None) -> Tuple[List[str], List[str]]:
@@ -108,6 +178,7 @@ def get_column_types(df: pd.DataFrame, info_path: Optional[str] = None) -> Tuple
 
 class ImputationRunner:
     """Runs imputation methods using hyperimpute."""
+
     def __init__(self, seed: int = DEFAULT_SEED, device: str = DEFAULT_DEVICE):
         self.seed = seed
         self.device = device
@@ -133,19 +204,30 @@ class ImputationRunner:
 def run_and_save_imputations(
     df_masked: pd.DataFrame,
     methods: List[str],
-    imputed_dir: str,
+    imputed_root: str,
+    dataset: str,
+    split: str,
+    mask_type: str,
+    rate: int,
+    mask_idx: int,
     seed: int = DEFAULT_SEED,
     device: str = DEFAULT_DEVICE,
-    overwrite: bool = False,
-    file_stem: str = ".csv"
+    overwrite: bool = False
 ) -> Dict[str, str]:
     """
-    Run imputation methods and save imputed datasets to disk.
+    Run imputation methods and save imputed datasets in structured directory.
+    
+    Saves to: {imputed_root}/{dataset}/{split}/{mask_type}/rate{rate}/mask_{mask_idx}/{method}/imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
     
     Args:
         df_masked: DataFrame with missing values
         methods: List of imputation methods to run
-        imputed_dir: Directory to save imputed datasets
+        imputed_root: Root directory for imputed datasets
+        dataset: Dataset name
+        split: 'train' or 'test'
+        mask_type: Missingness type (MCAR, MAR, MNAR)
+        rate: Missingness rate (e.g., 30)
+        mask_idx: Mask index
         seed: Random seed
         device: Device for computation
         overwrite: Whether to overwrite existing files
@@ -153,13 +235,25 @@ def run_and_save_imputations(
     Returns:
         Dict mapping method name to saved file path
     """
-    os.makedirs(imputed_dir, exist_ok=True)
     runner = ImputationRunner(seed=seed, device=device)
     saved_files = {}
     
     for method in methods:
-        output_filename = f"imputed_{method}_{file_stem}"
-        output_path = os.path.join(imputed_dir, output_filename)
+        # Create structured directory path
+        method_dir = os.path.join(
+            imputed_root,
+            dataset,
+            split,
+            mask_type,
+            f"rate{rate}",
+            f"mask_{mask_idx}",
+            method
+        )
+        os.makedirs(method_dir, exist_ok=True)
+        
+        # Create filename
+        output_filename = f"imputed_{method}_{dataset}_{mask_type}_{rate}_{mask_idx}.csv"
+        output_path = os.path.join(method_dir, output_filename)
         
         if os.path.exists(output_path) and not overwrite:
             print(f"Skipping {method}: {output_path} already exists")
@@ -190,22 +284,26 @@ def parse_runner_args() -> argparse.Namespace:
         description='Run imputation baselines using hyperimpute and save imputed datasets.'
     )
     
-    parser.add_argument('--dataset-dir', type=str, required=True,
-                        help='Folder containing train.csv and test.csv')
-    parser.add_argument('--mask-dir', type=str, required=True,
-                        help='Folder containing train_mask_*.npy and test_mask_*.npy files')
+    parser.add_argument('--data-root', type=str, required=True,
+                        help='Root directory containing datasets with masks (e.g., data/)')
+    parser.add_argument('--dataset', type=str, required=True,
+                        help='Dataset name (subdirectory in data-root)')
+    parser.add_argument('--mask-type', type=str, required=True,
+                        help='Missingness type (e.g., MCAR, MAR, MNAR)')
+    parser.add_argument('--rate', type=int, required=True,
+                        help='Missingness rate (e.g., 30 for 30%)')
     parser.add_argument('--mask-idx', type=int, required=True,
                         help='Index of the missingness mask to use (0-9)')
     parser.add_argument('--imputed-dir', type=str, required=True,
-                        help='Directory to save imputed datasets')
+                        help='Root directory to save imputed datasets')
     parser.add_argument('--overwrite', '-o', action='store_true',
                         help='Overwrite existing imputed datasets')
     parser.add_argument('--methods', type=str, nargs='+', default=DEFAULT_METHODS,
                         help=f'Imputation methods to run (default: {" ".join(DEFAULT_METHODS)})')
     parser.add_argument('--include-deep', action='store_true',
                         help=f'Include deep learning methods ({", ".join(DEEP_LEARNING_METHODS)})')
-    parser.add_argument('--use-train-set-for-conditioning', action='store_true',
-                        help='Use train set instead of test set')
+    parser.add_argument('--split', type=str, default='test', choices=['train', 'test'],
+                        help='Data split to use (default: test)')
     parser.add_argument('--seed', type=int, default=DEFAULT_SEED,
                         help=f'Random seed (default: {DEFAULT_SEED})')
     parser.add_argument('--device', type=str, default=DEFAULT_DEVICE, choices=['cpu', 'cuda'],
@@ -224,50 +322,62 @@ def main():
     
     # Print configuration
     print(f"Running imputation baselines with methods: {methods}")
-    print(f"Dataset: {args.dataset_dir}")
-    print(f"Masks: {args.mask_dir}, mask index: {args.mask_idx}")
-    print(f"Imputed datasets dir: {args.imputed_dir}")
+    print(f"Data root: {args.data_root}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Missingness: {args.mask_type}, Rate: {args.rate}%, Mask idx: {args.mask_idx}")
+    print(f"Split: {args.split}")
+    print(f"Imputed datasets root: {args.imputed_dir}")
     print(f"Seed: {args.seed}, Device: {args.device}")
     
     # Load data
     print("\nLoading data and masks...")
-    df_masked, df_complete, mask, split_name = load_data_and_masks(
-        dataset_dir=args.dataset_dir,
-        mask_dir=args.mask_dir,
-        mask_idx=args.mask_idx,
-        use_train_set=args.use_train_set_for_conditioning
-    )
+    try:
+        df_masked, df_complete, mask, split_name = load_data_and_masks(
+            data_root=args.data_root,
+            dataset=args.dataset,
+            mask_type=args.mask_type,
+            rate=args.rate,
+            mask_idx=args.mask_idx,
+            split=args.split
+        )
+        print(f"Loaded {split_name} split: {df_masked.shape[0]} samples, {df_masked.shape[1]} features")
+        print(f"Missingness rate: {mask.sum() / mask.size:.2%}")
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        print(f"Expected data at: {args.data_root}/{args.dataset}/")
+        print(f"Expected masks at: {args.data_root}/{args.dataset}/masks/rate{args.rate}/{args.mask_type}/")
+        return
     
-    print(f"Loaded {split_name} split: {df_masked.shape[0]} samples, {df_masked.shape[1]} features")
-    print(f"Missingness rate: {mask.sum() / mask.size:.2%}")
+    # Get info.json path if available
+    info_path = os.path.join(args.data_root, args.dataset, "info.json")
+    if not os.path.exists(info_path):
+        info_path = None
     
     # Run and save imputations
     print("\n" + "="*50)
     print("Running imputation methods...")
     print("="*50)
-
-    dataset = os.path.normpath(args.dataset_dir).split(os.sep)[-1]
-    mask_type = os.path.normpath(args.mask_dir).split(os.sep)[-1]
-    missingness_rate = os.path.normpath(args.mask_dir).split(os.sep)[-2].strip("rate")
-
-    file_stem = f"{dataset}_{mask_type}_{missingness_rate}_{args.mask_idx}.csv"
     
     saved_files = run_and_save_imputations(
         df_masked=df_masked,
         methods=methods,
-        imputed_dir=args.imputed_dir,
+        imputed_root=args.imputed_dir,
+        dataset=args.dataset,
+        split=args.split,
+        mask_type=args.mask_type,
+        rate=args.rate,
+        mask_idx=args.mask_idx,
         seed=args.seed,
         device=args.device,
-        overwrite=args.overwrite,
-        file_stem=file_stem,
+        overwrite=args.overwrite
     )
-
+    
     print("\n" + "="*50)
     print("SUMMARY")
     print("="*50)
     for method, path in saved_files.items():
         print(f"  {method}: {path}")
-
+    
     print(f"\nDone! Saved {len(saved_files)} imputed datasets.")
     print("Use evaluate_imputation.py to compute metrics on these datasets.")
 
