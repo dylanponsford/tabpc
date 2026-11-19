@@ -74,8 +74,8 @@ def generate_synthetic_dataset_tabpfn(
         )
     else:
         preprocessors = [
-            TypeConversion(cat_max_states=160, 
-                            int_max_states=None),
+            TypeConversion(cat_max_states=160,
+                           int_max_states=None),
             # NanHandler(handle_inflated_values=True, handle_missing_values=False), # TabPFN states you should not preprocess data
             # Dequantization(dequantize=True, dequantize_all_floats=False), # This should not be needed for TabPFN
             # QuantileNormalizer(), # TabPFN states that you should not scale data
@@ -87,24 +87,26 @@ def generate_synthetic_dataset_tabpfn(
     df_X_encoded = df_X.copy()
 
     if use_only_ordinal:
-        df_X_encoded.iloc[:, categorical_features] = encoder.fit_transform(df_X_encoded.iloc[:, categorical_features])
+        df_X_encoded.iloc[:, categorical_features] = encoder.fit_transform(
+            df_X_encoded.iloc[:, categorical_features]
+        )
         # X_preprocessed = df_X_encoded.to_numpy()
         X_preprocessed = torch.from_numpy(df_X_encoded.values.astype("float32")).float()
-        
+
         feature_names = df_X_encoded.columns
     else:
         X_preprocessed = encoder.fit_transform(df_X_encoded)
 
         feature_names = encoder.preprocessors[-1].parameters["names"]
-    
+
     feature_indices = [*range(X_preprocessed.shape[1])] # Select all indices for generation
     # Now this can include features added after preprocessing (e.g. for inflated value handling)
-    
+
     y_preprocessed = torch.empty([])
 
     # Initialize TabPFN models
     model_unsupervised = unsupervised.TabPFNUnsupervisedModel(
-        tabpfn_clf=TabPFNClassifier(), 
+        tabpfn_clf=TabPFNClassifier(),
         tabpfn_reg=TabPFNRegressor()
     )
 
@@ -152,7 +154,8 @@ def generate_synthetic_dataset_tabpfn(
     return
 
 if __name__ == "__main__":
-    # Monkey patch the run method of the GenerateSyntheticDataExperiment class to fix current bug with treating features as categorical
+    # Monkey patch the run method of the GenerateSyntheticDataExperiment class
+    # to fix current bug with treating features as categorical
     # GenerateSyntheticDataExperiment.run = run
 
     parser = argparse.ArgumentParser(description="Generate synthetic data using TabPFN in the format expected by the repo")
