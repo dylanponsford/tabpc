@@ -338,8 +338,6 @@ class ProbabilisticCircuit(Model):
 
         num_batches = math.ceil(num_to_generate / batch_size)
 
-        # import pdb; pdb.set_trace()
-
         for i in tqdm.tqdm(range(num_batches), desc="Generating samples"):
             start = i * batch_size
             end = min((i + 1) * batch_size, num_to_generate)
