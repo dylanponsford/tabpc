@@ -23,24 +23,25 @@ from src.util import get_available_device
 import argparse
 
 # Pattern to extract missingness details from mask path
-# Expects: .../masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
+# Expects: .../{dataset}/masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
 # Example: data/adult/masks/rate30/MAR/test_mask_0.npy
 MASK_PATTERN = re.compile(
+    r'(?P<dataset>[^/]+)/'
     r'masks/'
     r'rate(?P<rate>\d+)/'
     r'(?P<type>[^/]+)/'
     r'(?P<split>train|test)_mask_(?P<idx>\d+)\.npy'
 )
 
-def extract_missingness_details(mask_path: str) -> dict | None:
+def extract_missingness_details(mask_path: str) -> dict:
     """
-    Extract missingness details from mask file path.
+    Extract missingness details and dataset name from mask file path.
     
     Args:
         mask_path: Path to mask file (e.g., data/adult/masks/rate30/MAR/test_mask_0.npy)
     
     Returns:
-        Dictionary with keys: 'rate', 'type', 'idx', 'split'
+        Dictionary with keys: 'dataset', 'rate', 'type', 'idx', 'split'
         Returns None if pattern doesn't match
     """
     mask_path = os.path.normpath(mask_path)
@@ -48,6 +49,7 @@ def extract_missingness_details(mask_path: str) -> dict | None:
     
     if match:
         return {
+            'dataset': match.group('dataset'),
             'rate': int(match.group('rate')),
             'type': match.group('type'),
             'idx': int(match.group('idx')),
@@ -67,6 +69,7 @@ def main(
         train_mask_path: str,
         test_mask_path: str,
         qn_invertible: bool = False,
+        no_iv: bool = False,
     ) -> None:
     WANDB = False
     DO_PLOTS = False
@@ -83,7 +86,10 @@ def main(
 
     bin_for_mi = 15
     dequantize_all_floats = False
-    handle_inflated_values = True
+    if no_iv:
+        handle_inflated_values = False
+    else:
+        handle_inflated_values = True
     quantile_normalizer = True
     validation_size = 0.10
 
@@ -100,16 +106,19 @@ def main(
 
     DATASET_PATH = path
 
-    DATASET_NAME = DATASET_PATH.split('/')[-1].split('.')[0]
-    TARGET_FOLDER = f'artifacts/imputation_models/{DATASET_NAME}' if target_folder is None else target_folder
+    if train_mask_path and mask_info:
+        dataset_name = mask_info['dataset']
+    else:
+        dataset_name = DATASET_PATH.split('/')[-1].split('.')[0]
+    TARGET_FOLDER = f'artifacts/imputation_models/{dataset_name}' if target_folder is None else target_folder
 
-    NAME = 'pc_' + DATASET_NAME + '_' + str(num_units) + '_' + str(batch_size) + '_' + str(lr) + POSTFIX
+    NAME = 'pc_' + dataset_name + '_' + str(num_units) + '_' + str(batch_size) + '_' + str(lr) + POSTFIX
     print(f"Running experiment with name: {NAME} on dataset: {DATASET_PATH}")
     
     if train_mask_path:
         mask_info = extract_missingness_details(train_mask_path)
         if mask_info:
-            print(f"Missingness: {mask_info['type']}, Rate: {mask_info['rate']}%, Mask idx: {mask_info['idx']}")
+            print(f"Dataset: {mask_info['dataset']}, Missingness: {mask_info['type']}, Rate: {mask_info['rate']}%, Mask idx: {mask_info['idx']}, Split: {mask_info['split']}")
 
     experiment = ExperimentConfig(
         name=NAME,
