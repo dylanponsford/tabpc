@@ -26,27 +26,22 @@ Usage:
         --rate 30 \
         --mask-idx 0 \
         --imputed-dir artifacts/imputed \
-        --methods mean median mice \
-        --seed 42
-    
-    # Evaluate existing imputed datasets
-    python evaluate_imputation.py \
-        --imputed-dir artifacts/imputed \
-        --data-root data \
-        --output-dir results \
-        --aggregate \
+        --methods mean_mode median_mode mice missforest \
         --seed 42
 """
+
+from __future__ import annotations
 
 import os
 import re
 import argparse
 import gc
 import json
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 
 import pandas as pd
 import numpy as np
+import torch
 from sklearn.impute import SimpleImputer
 
 # Try to import hyperimpute - will be available on cluster
@@ -62,6 +57,9 @@ DEFAULT_METHODS = ['mean_mode', 'median_mode', 'mice', 'missforest']
 DEEP_LEARNING_METHODS = ['gain', 'miwae', 'vaec']
 DEFAULT_SEED = 42
 DEFAULT_DEVICE = 'cpu'
+
+# Type alias for data that can be either DataFrame or Tensor
+DataInput = Union[pd.DataFrame, torch.Tensor]
 
 # Pattern to extract missingness details from mask path
 # Expects: .../{dataset}/masks/rate{N}/{TYPE}/{split}_mask_{idx}.npy
@@ -176,11 +174,31 @@ def get_column_types(df: pd.DataFrame, info_path: Optional[str] = None) -> Tuple
     return numeric_cols, categorical_cols
 
 
+def tensor_to_dataframe(tensor: torch.Tensor, columns: List[str] | None = None) -> pd.DataFrame:
+    """Convert torch tensor to pandas DataFrame."""
+    if tensor.dim() == 1:
+        tensor = tensor.unsqueeze(1)
+    
+    # Move to CPU and convert to numpy
+    tensor_np = tensor.detach().cpu().numpy()
+    
+    if columns is None:
+        columns = [f"feature_{i}" for i in range(tensor_np.shape[1])]
+    
+    return pd.DataFrame(tensor_np, columns=columns)
+
+
+def dataframe_to_tensor(df: pd.DataFrame) -> torch.Tensor:
+    """Convert pandas DataFrame to torch tensor."""
+    return torch.tensor(df.values, dtype=torch.float32)
+
+
 def simple_statistical_imputation(
-    df_masked: pd.DataFrame,
+    data: DataInput,
     numeric_strategy: str = 'mean',
-    categorical_strategy: str = 'most_frequent'
-) -> pd.DataFrame:
+    categorical_strategy: str = 'most_frequent',
+    column_names: List[str] | None = None
+) -> DataInput:
     """
     Simple statistical imputation using scikit-learn's SimpleImputer.
     
@@ -189,13 +207,22 @@ def simple_statistical_imputation(
     - Categorical: most_frequent (mode)
     
     Args:
-        df_masked: DataFrame with missing values
+        data: DataFrame or torch.Tensor with missing values
         numeric_strategy: 'mean' or 'median' for numeric columns
         categorical_strategy: 'most_frequent' for categorical columns
+        column_names: Optional column names for tensor input
     
     Returns:
-        DataFrame with imputed values
+        DataFrame or torch.Tensor with imputed values (same type as input)
     """
+    # Convert tensor to DataFrame if needed
+    input_was_tensor = isinstance(data, torch.Tensor)
+    
+    if input_was_tensor:
+        df_masked = tensor_to_dataframe(data, column_names)
+    else:
+        df_masked = data
+    
     df_imputed = df_masked.copy()
     
     # Get column types
@@ -211,12 +238,16 @@ def simple_statistical_imputation(
         categorical_imputer = SimpleImputer(strategy=categorical_strategy)
         df_imputed[categorical_cols] = categorical_imputer.fit_transform(df_masked[categorical_cols])
     
+    # Convert back to tensor if input was tensor
+    if input_was_tensor:
+        return dataframe_to_tensor(df_imputed)
+    
     return df_imputed
 
 
 class ImputationRunner:
     """Runs imputation methods using hyperimpute."""
-
+    
     def __init__(self, seed: int = DEFAULT_SEED, device: str = DEFAULT_DEVICE):
         self.seed = seed
         self.device = device
@@ -224,21 +255,40 @@ class ImputationRunner:
         if Imputers is None:
             raise ImportError("hyperimpute.plugins.imputers.Imputers not available")
     
-    def run(self, df_masked: pd.DataFrame, method: str) -> pd.DataFrame:
-        """Run a single imputation method."""
+    def run(self, data: DataInput, method: str) -> DataInput:
+        """
+        Run a single imputation method.
+        
+        Args:
+            data: DataFrame or torch.Tensor with missing values
+            method: Name of the imputation method
+        
+        Returns:
+            DataFrame or torch.Tensor with imputed values (same type as input)
+        """
         # Check for simple statistical methods
         if method == 'mean_mode':
             return simple_statistical_imputation(
-                df_masked,
+                data,
                 numeric_strategy='mean',
                 categorical_strategy='most_frequent'
             )
         elif method == 'median_mode':
             return simple_statistical_imputation(
-                df_masked,
+                data,
                 numeric_strategy='median',
                 categorical_strategy='most_frequent'
             )
+        
+        # For hyperimpute methods, ensure input is DataFrame
+        input_was_tensor = isinstance(data, torch.Tensor)
+        column_names = None
+        
+        if input_was_tensor:
+            column_names = [f"feature_{i}" for i in range(data.shape[1])]
+            df_input = tensor_to_dataframe(data, column_names)
+        else:
+            df_input = data
         
         # Use hyperimpute for other methods
         imputer = Imputers().get(name=method.lower(), random_state=self.seed)
@@ -246,10 +296,14 @@ class ImputationRunner:
         if self.device == "cuda" and hasattr(imputer, 'device'):
             imputer.device = self.device
         
-        df_imputed = imputer.fit_transform(df_masked)
+        df_imputed = imputer.fit_transform(df_input)
         
         if isinstance(df_imputed, np.ndarray):
-            df_imputed = pd.DataFrame(df_imputed, columns=df_masked.columns)
+            df_imputed = pd.DataFrame(df_imputed, columns=df_input.columns)
+        
+        # Convert back to tensor if input was tensor
+        if input_was_tensor:
+            return dataframe_to_tensor(df_imputed)
         
         return df_imputed
 
@@ -265,12 +319,20 @@ def run_and_save_imputations(
     mask_idx: int,
     seed: int = DEFAULT_SEED,
     device: str = DEFAULT_DEVICE,
-    overwrite: bool = False
+    overwrite: bool = False,
 ) -> Dict[str, str]:
     """
     Run imputation methods and save imputed datasets in structured directory.
     
-    Saves to: {imputed_root}/{dataset}/{split}/{mask_type}/rate{rate}/mask_{mask_idx}/{method}/imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
+    Saves to:
+        {imputed_root}/
+        {dataset}/
+        {split}/
+        {mask_type}/
+        rate{rate}/
+        mask_{mask_idx}/
+        {method}/
+        imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
     
     Args:
         df_masked: DataFrame with missing values
@@ -318,6 +380,11 @@ def run_and_save_imputations(
         
         try:
             df_imputed = runner.run(df_masked, method)
+            
+            # Ensure output is DataFrame for saving
+            if isinstance(df_imputed, torch.Tensor):
+                df_imputed = tensor_to_dataframe(df_imputed, df_masked.columns.tolist())
+            
             df_imputed.to_csv(output_path, index=False)
             saved_files[method] = output_path
             print(f"Saved imputed dataset to: {output_path}")
@@ -422,7 +489,7 @@ def main():
         mask_idx=args.mask_idx,
         seed=args.seed,
         device=args.device,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
     )
     
     print("\n" + "="*50)
