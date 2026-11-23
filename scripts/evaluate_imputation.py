@@ -474,6 +474,7 @@ def evaluate_structured_directory(
     
     # Process each group
     all_results = []
+    dataset_results = defaultdict(list)  # Collect results per dataset for overview CSV
     
     for (dataset, split, missingness_type, rate, mask_idx), files in grouped.items():
         print(f"\n{'='*60}")
@@ -599,42 +600,100 @@ def evaluate_structured_directory(
             print(f"\n  Saved metrics to: {output_path}")
             print(f"  Columns: {len(results_df.columns)} (includes per-feature metrics)")
             all_results.append(results_df)
+            
+            # Collect for per-dataset overview
+            dataset_results[dataset].append(results_df)
+    
+    # Save per-dataset overview CSVs (with per-feature metrics)
+    if dataset_results:
+        print(f"\n{'='*60}")
+        print("SAVING PER-DATASET OVERVIEW CSVs")
+        print(f"{'='*60}")
+        
+        for dataset_name, dataset_dfs in dataset_results.items():
+            dataset_overview = pd.concat(dataset_dfs, ignore_index=True)
+            
+            # Sort
+            sort_cols = ['split', 'missingness_type', 'rate', 'mask_idx', 'method', 'seed']
+            available_sort_cols = [c for c in sort_cols if c in dataset_overview.columns]
+            if available_sort_cols:
+                dataset_overview = dataset_overview.sort_values(available_sort_cols)
+            
+            # Reorder columns: metadata first, then aggregated metrics, then per-feature
+            metadata_cols = ['split', 'missingness_type', 'rate', 'mask_idx', 'method', 'seed']
+            aggregated_cols = ['rmse_mean', 'rmse_std', 'mae_mean', 'mae_std', 'nrmse_mean', 'nrmse_std', 
+                             'accuracy_mean', 'accuracy_std', 'missingness_rate', 'n_numeric_features', 
+                             'n_categorical_features', 'imputation_valid', 'validity_issues']
+            
+            meta_cols = [c for c in metadata_cols if c in dataset_overview.columns]
+            agg_cols = [c for c in aggregated_cols if c in dataset_overview.columns]
+            other_cols = [c for c in dataset_overview.columns if c not in meta_cols and c not in agg_cols]
+            
+            dataset_overview = dataset_overview[meta_cols + agg_cols + other_cols]
+            
+            # Save to output_root/dataset/overview.csv
+            dataset_output_dir = os.path.join(output_root, dataset_name)
+            os.makedirs(dataset_output_dir, exist_ok=True)
+            overview_path = os.path.join(dataset_output_dir, "overview.csv")
+            dataset_overview.to_csv(overview_path, index=False)
+            print(f"Saved {dataset_name} overview to: {overview_path}")
+            print(f"  Experiments: {len(dataset_overview)}, Columns: {len(dataset_overview.columns)} (includes per-feature metrics)")
     
     # Aggregate if requested
     if aggregate and all_results:
+        # Create overall all_results.csv with only aggregated metrics (no per-feature columns)
         print(f"\n{'='*60}")
-        print("AGGREGATING ALL RESULTS")
+        print("AGGREGATING ALL RESULTS (aggregated metrics only)")
         print(f"{'='*60}")
         
         combined = pd.concat(all_results, ignore_index=True)
         
+        # Identify per-feature columns (contain feature names followed by metric type)
+        # We keep: nrmse_mean, nrmse_std, accuracy_mean, accuracy_std (cross-dataset comparable metrics)
+        # We also keep: missingness_rate, n_numeric_features, n_categorical_features, metadata columns
+        # We remove: RMSE/MAE (scale-dependent) and per-feature columns
+        # Note: Full RMSE/MAE metrics available in per-dataset overview.csv files
+        
+        aggregated_metric_cols = [
+            'nrmse_mean', 'nrmse_std',
+            'accuracy_mean', 'accuracy_std',
+            'missingness_rate', 'n_numeric_features', 'n_categorical_features',
+            'imputation_valid', 'validity_issues'
+        ]
+        metadata_cols = ['dataset', 'split', 'missingness_type', 'rate', 'mask_idx', 'method', 'seed']
+        
+        # Keep only aggregated metrics and metadata columns, with metadata first
+        meta_cols = [c for c in metadata_cols if c in combined.columns]
+        agg_cols = [c for c in aggregated_metric_cols if c in combined.columns]
+        combined_agg = combined[meta_cols + agg_cols]
+        
         # Sort
         sort_cols = ['dataset', 'split', 'missingness_type', 'rate', 'mask_idx', 'method', 'seed']
-        available_sort_cols = [c for c in sort_cols if c in combined.columns]
+        available_sort_cols = [c for c in sort_cols if c in combined_agg.columns]
         if available_sort_cols:
-            combined = combined.sort_values(available_sort_cols)
+            combined_agg = combined_agg.sort_values(available_sort_cols)
         
         # Save aggregated results
         agg_output_path = os.path.join(output_root, "all_results.csv")
-        combined.to_csv(agg_output_path, index=False)
+        combined_agg.to_csv(agg_output_path, index=False)
         print(f"Saved aggregated results to: {agg_output_path}")
-        print(f"Total experiments: {len(combined)}")
-        print(f"Total columns: {len(combined.columns)} (includes per-feature metrics)")
+        print(f"Total experiments: {len(combined_agg)}")
+        print(f"Columns: {len(combined_agg.columns)} (aggregated metrics only, no per-feature columns)")
         
         # Print summary
-        if 'method' in combined.columns:
+        if 'method' in combined_agg.columns:
             print("\nMethods evaluated:")
-            print(combined['method'].value_counts().to_string())
+            print(combined_agg['method'].value_counts().to_string())
         
-        if 'dataset' in combined.columns:
+        if 'dataset' in combined_agg.columns:
             print("\nDatasets:")
-            print(combined['dataset'].value_counts().to_string())
+            print(combined_agg['dataset'].value_counts().to_string())
         
-        if 'rate' in combined.columns:
+        if 'rate' in combined_agg.columns:
             print("\nMissingness rates:")
-            print(sorted(combined['rate'].unique()))
+            print(sorted(combined_agg['rate'].unique()))
         
-        return combined
+        return combined_agg
     
     return None
 
