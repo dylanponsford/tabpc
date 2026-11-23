@@ -44,10 +44,10 @@ import argparse
 import gc
 import json
 from typing import Dict, List, Tuple, Optional, Any
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
+from sklearn.impute import SimpleImputer
 
 # Try to import hyperimpute - will be available on cluster
 try:
@@ -58,7 +58,7 @@ except ImportError:
 
 
 # Constants
-DEFAULT_METHODS = ['mean', 'median', 'mice', 'missforest']
+DEFAULT_METHODS = ['mean_mode', 'median_mode', 'mice', 'missforest']
 DEEP_LEARNING_METHODS = ['gain', 'miwae', 'vaec']
 DEFAULT_SEED = 42
 DEFAULT_DEVICE = 'cpu'
@@ -176,6 +176,44 @@ def get_column_types(df: pd.DataFrame, info_path: Optional[str] = None) -> Tuple
     return numeric_cols, categorical_cols
 
 
+def simple_statistical_imputation(
+    df_masked: pd.DataFrame,
+    numeric_strategy: str = 'mean',
+    categorical_strategy: str = 'most_frequent'
+) -> pd.DataFrame:
+    """
+    Simple statistical imputation using scikit-learn's SimpleImputer.
+    
+    Applies different strategies for numeric and categorical columns:
+    - Numeric: mean or median
+    - Categorical: most_frequent (mode)
+    
+    Args:
+        df_masked: DataFrame with missing values
+        numeric_strategy: 'mean' or 'median' for numeric columns
+        categorical_strategy: 'most_frequent' for categorical columns
+    
+    Returns:
+        DataFrame with imputed values
+    """
+    df_imputed = df_masked.copy()
+    
+    # Get column types
+    numeric_cols, categorical_cols = get_column_types(df_masked)
+    
+    # Impute numeric columns
+    if numeric_cols:
+        numeric_imputer = SimpleImputer(strategy=numeric_strategy)
+        df_imputed[numeric_cols] = numeric_imputer.fit_transform(df_masked[numeric_cols])
+    
+    # Impute categorical columns
+    if categorical_cols:
+        categorical_imputer = SimpleImputer(strategy=categorical_strategy)
+        df_imputed[categorical_cols] = categorical_imputer.fit_transform(df_masked[categorical_cols])
+    
+    return df_imputed
+
+
 class ImputationRunner:
     """Runs imputation methods using hyperimpute."""
 
@@ -187,7 +225,22 @@ class ImputationRunner:
             raise ImportError("hyperimpute.plugins.imputers.Imputers not available")
     
     def run(self, df_masked: pd.DataFrame, method: str) -> pd.DataFrame:
-        """Run a single imputation method."""        
+        """Run a single imputation method."""
+        # Check for simple statistical methods
+        if method == 'mean_mode':
+            return simple_statistical_imputation(
+                df_masked,
+                numeric_strategy='mean',
+                categorical_strategy='most_frequent'
+            )
+        elif method == 'median_mode':
+            return simple_statistical_imputation(
+                df_masked,
+                numeric_strategy='median',
+                categorical_strategy='most_frequent'
+            )
+        
+        # Use hyperimpute for other methods
         imputer = Imputers().get(name=method.lower(), random_state=self.seed)
         
         if self.device == "cuda" and hasattr(imputer, 'device'):
