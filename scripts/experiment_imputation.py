@@ -1,10 +1,10 @@
 import os
 import gc
 import sys
+import json
 import re
 import argparse
 import pandas as pd
-import numpy as np
 import torch
 
 sys.path.append(".")
@@ -26,6 +26,60 @@ MASK_PATTERN = re.compile(
     r'(?P<type>[^/]+)/'
     r'(?P<split>train|test)_mask_(?P<idx>\d+)\.npy'
 )
+
+SOTA_PARAMS = {
+    "adult": {
+        "num_units": 4096,
+        "batch_size": 512,
+        "lr": 0.25
+    },
+    "beijing": {
+        "num_units": 4096,
+        "batch_size": 512,
+        "lr": 0.25
+    },
+    "diabetes": {
+        "num_units": 2048,
+        "batch_size": 512,
+        "lr": 0.25
+    },
+    "default": {
+        "num_units": 512,
+        "batch_size": 512,
+        "lr": 0.1
+    },
+    "magic": {
+        "num_units": 2048,
+        "batch_size": 256,
+        "lr": 0.1
+    },
+    "news": {
+        "num_units": 1024,
+        "batch_size": 512,
+        "lr": 0.1
+    },
+    "shoppers": {
+        "num_units": 2048,
+        "batch_size": 512,
+        "lr": 0.1
+    }
+}
+
+
+def get_sota_params(dataset_dir: str) -> dict | None:
+    """
+    Get SOTA parameters for a given dataset directory.
+    
+    Matches dataset name (case-insensitive) against known datasets.
+    Returns None if no match is found.
+    """
+    dataset_name = os.path.basename(dataset_dir).lower()
+    
+    for key, params in SOTA_PARAMS.items():
+        if key in dataset_name:
+            return params
+    
+    return None
 
 def free_memory():
     torch.cuda.empty_cache()
@@ -193,6 +247,8 @@ if __name__ == "__main__":
                         help='Whether to make the quantile normaliser transformation invertible.')
     parser.add_argument('--method-name', type=str, default='tabpc',
                         help='Name to display in imputation results (default: "tabpc")')
+    parser.add_argument('--sota', action='store_true',
+                        help='Use pre-tuned SOTA parameters based on dataset name (overrides --num-units, --batch-size, --lr)')
     parser.add_argument('--no-iv', action='store_true',
                         help='Whether to drop the inflated value handling preprocessor.')
 
@@ -210,6 +266,18 @@ if __name__ == "__main__":
         train_mask_path = os.path.join(args.mask_dir, train_mask_filename)
         test_mask_path = os.path.join(args.mask_dir, test_mask_filename)
         dataset_dir = args.dataset_dir
+        
+        # Override with SOTA parameters if --sota flag is specified
+        if args.sota:
+            sota_params = get_sota_params(dataset_dir)
+            if sota_params:
+                print(f"Using SOTA parameters for dataset: {json.dumps(sota_params)}")
+                args.num_units = sota_params["num_units"]
+                args.batch_size = sota_params["batch_size"]
+                args.lr = sota_params["lr"]
+            else:
+                print(f"Warning: No SOTA parameters found for dataset '{dataset_dir}'. Using default values.")
+        
         print(f"Training TabPC on {dataset_dir}")
         train_pc(
             path=args.dataset_dir,
