@@ -37,6 +37,7 @@ import re
 import argparse
 import gc
 import json
+import sys
 from typing import Dict, List, Tuple, Optional, Any, Union
 
 import pandas as pd
@@ -51,6 +52,15 @@ except ImportError:
     print("Warning: hyperimpute not available. Install with: pip install hyperimpute")
     Imputers = None
 
+sys.path.append('.')
+from src.preprocessors.preprocessor import Preprocessor
+from src.preprocessors.compose import Compose
+from src.preprocessors.nan_handler import NanHandler
+from src.preprocessors.df_type_conversion import TypeConversion
+from src.preprocessors.df_quantile_normalizer import QuantileNormalizer
+from src.preprocessors.df_dequantization import Dequantization
+from src.preprocessors.string_to_int import StringToInt
+from src.preprocessors.to_tensor import ToTensor
 
 # Constants
 DEFAULT_METHODS = ['mean_mode', 'median_mode', 'mice', 'missforest']
@@ -309,7 +319,7 @@ class ImputationRunner:
 
 
 def run_and_save_imputations(
-    df_masked: pd.DataFrame,
+    input_data: DataInput,
     methods: List[str],
     imputed_root: str,
     dataset: str,
@@ -320,6 +330,8 @@ def run_and_save_imputations(
     seed: int = DEFAULT_SEED,
     device: str = DEFAULT_DEVICE,
     overwrite: bool = False,
+    using_preprocessing: bool = False,
+    preprocessor: Preprocessor | None = None
 ) -> Dict[str, str]:
     """
     Run imputation methods and save imputed datasets in structured directory.
@@ -335,7 +347,7 @@ def run_and_save_imputations(
         imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
     
     Args:
-        df_masked: DataFrame with missing values
+        input_data: DataFrame or Tensor with missing values
         methods: List of imputation methods to run
         imputed_root: Root directory for imputed datasets
         dataset: Dataset name
@@ -346,6 +358,8 @@ def run_and_save_imputations(
         seed: Random seed
         device: Device for computation
         overwrite: Whether to overwrite existing files
+        using_preprocessing: Whether to use the TabPC preprocessing
+        preprocessor: Either the TabPC preprocessing, or None
     
     Returns:
         Dict mapping method name to saved file path
@@ -354,6 +368,12 @@ def run_and_save_imputations(
     saved_files = {}
     
     for method in methods:
+        # Create filename
+        if using_preprocessing:
+            preprocessing = "_w_preprocessing"
+        else:
+            preprocessing = ""
+
         # Create structured directory path
         method_dir = os.path.join(
             imputed_root,
@@ -362,12 +382,11 @@ def run_and_save_imputations(
             mask_type,
             f"rate{rate}",
             f"mask_{mask_idx}",
-            method
+            f"{method}{preprocessing}"
         )
         os.makedirs(method_dir, exist_ok=True)
-        
-        # Create filename
-        output_filename = f"imputed_{method}_{dataset}_{mask_type}_{rate}_{mask_idx}.csv"
+
+        output_filename = f"imputed_{method}{preprocessing}_{dataset}_{mask_type}_{rate}_{mask_idx}.csv"
         output_path = os.path.join(method_dir, output_filename)
         
         if os.path.exists(output_path) and not overwrite:
@@ -379,11 +398,16 @@ def run_and_save_imputations(
         print(f"{'='*50}")
         
         try:
-            df_imputed = runner.run(df_masked, method)
+            df_imputed = runner.run(input_data, method)
             
-            # Ensure output is DataFrame for saving
-            if isinstance(df_imputed, torch.Tensor):
-                df_imputed = tensor_to_dataframe(df_imputed, df_masked.columns.tolist())
+            # Reverse preprocessing if it was applied
+            if using_preprocessing:
+                assert preprocessor is not None, "Preprocessor must be specified \
+                    if using preprocessing"
+
+                df_imputed = preprocessor.reverse_transform(df_imputed)
+                assert isinstance(df_imputed, pd.DataFrame), "Reversing preprocessing \
+                    must return a DataFrame"
             
             df_imputed.to_csv(output_path, index=False)
             saved_files[method] = output_path
@@ -428,6 +452,8 @@ def parse_runner_args() -> argparse.Namespace:
                         help=f'Random seed (default: {DEFAULT_SEED})')
     parser.add_argument('--device', type=str, default=DEFAULT_DEVICE, choices=['cpu', 'cuda'],
                         help=f'Device to use (default: {DEFAULT_DEVICE})')
+    parser.add_argument('--use-preprocessing', action='store_true',
+                        help='Whether to use the pre-processing pipeline from TabPC before imputing.')
     
     return parser.parse_args()
 
@@ -477,9 +503,27 @@ def main():
     print("\n" + "="*50)
     print("Running imputation methods...")
     print("="*50)
+
+    if args.use_preprocessing:
+        preprocessors = [
+            TypeConversion(cat_max_states=50,
+                           int_max_states=None),
+            NanHandler(handle_inflated_values=False,
+                       handle_missing_values=False),
+            Dequantization(dequantize=True,
+                           dequantize_all_floats=False),
+            QuantileNormalizer(invertible=False),
+            # StringToInt(),
+            # ToTensor(),
+        ]
+        preprocessor = Compose(preprocessors)
+        input_data = preprocessor.fit_transform(df_masked)
+    else:
+        input_data = df_masked
+        preprocessor = None
     
     saved_files = run_and_save_imputations(
-        df_masked=df_masked,
+        input_data=input_data,
         methods=methods,
         imputed_root=args.imputed_dir,
         dataset=args.dataset,
@@ -490,6 +534,8 @@ def main():
         seed=args.seed,
         device=args.device,
         overwrite=args.overwrite,
+        using_preprocessing=args.use_preprocessing,
+        preprocessor=preprocessor,
     )
     
     print("\n" + "="*50)
