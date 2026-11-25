@@ -311,10 +311,10 @@ class ProbabilisticCircuit(Model):
         num_to_generate: int | None = None,
     ) -> pd.DataFrame:
         tensor_condition = (
-                    self.preprocessor.transform(condition)
-                    if self.preprocessor is not None
-                    else condition
-                )
+            self.preprocessor.transform(condition)
+            if self.preprocessor is not None
+            else condition
+        )
 
         if batch_size is None:
             batch_size = self.optimal_batch_size_for_sampling(backward=False)
