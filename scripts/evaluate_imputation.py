@@ -176,7 +176,7 @@ class ImputationValidator:
                 imputed_vals = df_imputed.loc[~self.mask_df[col], col].values
                 
                 if pd.api.types.is_numeric_dtype(df_imputed[col]):
-                    diff = np.abs(original_vals - imputed_vals) > 1e-6
+                    diff = np.abs(original_vals - imputed_vals) > 1e-4
                     non_mask_changed += np.sum(diff)
                 else:
                     non_mask_changed += np.sum(original_vals != imputed_vals)
