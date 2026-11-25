@@ -1,3 +1,4 @@
+from __future__ import annotations
 import _thread
 import fnmatch
 import json

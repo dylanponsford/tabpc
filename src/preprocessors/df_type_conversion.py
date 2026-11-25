@@ -1,3 +1,4 @@
+from __future__ import annotations
 import pandas as pd
 
 from src.util import is_fake_float, printc, type_identification_features
