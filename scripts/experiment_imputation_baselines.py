@@ -518,6 +518,7 @@ def main():
         ]
         preprocessor = Compose(preprocessors)
         input_data = preprocessor.fit_transform(df_masked)
+        input_data = input_data.mask(mask)
     else:
         input_data = df_masked
         preprocessor = None
