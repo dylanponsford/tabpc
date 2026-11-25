@@ -21,6 +21,7 @@ from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor
 from tabpfn_extensions.unsupervised.unsupervised import TabPFNUnsupervisedModel, efficient_random_permutation, \
     _resolve_dag_order
 from tabpfn_extensions.utils import get_max_num_classes
+from tabpfn_extensions.unsupervised import simple_impute
 
 from src.preprocessors.compose import Compose
 from src.preprocessors.nan_handler import NanHandler
@@ -37,211 +38,211 @@ TABPFN_MAX_CATS = 160
 ### BEGIN MONKEYPATCH FUNCTIONS
 
 
-def impute_(
-    self,
-    X: torch.Tensor,
-    t: float = 0.000000001,
-    n_permutations: int = 10,
-    condition_on_all_features: bool = True,
-    dag: dict[int, list[int]] | None = None,
-    fast_mode: bool = False,
-) -> torch.Tensor:
-    """Impute missing values (np.nan) in X by sampling all cells independently from the trained models.
+# def impute_(
+#     self,
+#     X: torch.Tensor,
+#     t: float = 0.000000001,
+#     n_permutations: int = 10,
+#     condition_on_all_features: bool = True,
+#     dag: dict[int, list[int]] | None = None,
+#     fast_mode: bool = False,
+# ) -> torch.Tensor:
+#     """Impute missing values (np.nan) in X by sampling all cells independently from the trained models.
 
-    Parameters:
-        X: torch.Tensor
-            Input data of shape (n_samples, n_features) with missing values encoded as np.nan
-        t: float, default=0.000000001
-            Temperature for sampling from the imputation distribution, lower values are more deterministic
-        n_permutations: int, default=10
-            Number of permutations to use for imputation
-        condition_on_all_features: bool, default=True
-            Whether to condition on all other features (True) or only previous features (False)
-        dag: dict[int, list[int]] | None, default=None
-            Optional Directed Acyclic Graph mapping each column index to its
-            list of parent column indices (i.e. the features it depends on).
-            When provided, columns are imputed in topological order and each
-            column is conditioned on exactly its DAG parents. Mutually
-            exclusive with ``condition_on_all_features=True``. Every feature
-            must appear as a key; map a feature to an empty list to impute
-            it without conditioning.
-        fast_mode: bool, default=False
-            Whether to use faster settings for testing
+#     Parameters:
+#         X: torch.Tensor
+#             Input data of shape (n_samples, n_features) with missing values encoded as np.nan
+#         t: float, default=0.000000001
+#             Temperature for sampling from the imputation distribution, lower values are more deterministic
+#         n_permutations: int, default=10
+#             Number of permutations to use for imputation
+#         condition_on_all_features: bool, default=True
+#             Whether to condition on all other features (True) or only previous features (False)
+#         dag: dict[int, list[int]] | None, default=None
+#             Optional Directed Acyclic Graph mapping each column index to its
+#             list of parent column indices (i.e. the features it depends on).
+#             When provided, columns are imputed in topological order and each
+#             column is conditioned on exactly its DAG parents. Mutually
+#             exclusive with ``condition_on_all_features=True``. Every feature
+#             must appear as a key; map a feature to an empty list to impute
+#             it without conditioning.
+#         fast_mode: bool, default=False
+#             Whether to use faster settings for testing
 
-    Returns:
-        torch.Tensor: Imputed data with missing values replaced
+#     Returns:
+#         torch.Tensor: Imputed data with missing values replaced
 
-    Raises:
-        ValueError: If ``dag`` is combined with ``condition_on_all_features=True``,
-            contains a cycle, or does not specify every feature.
-    """
-    n_features = X.shape[1]
-    all_features = list(range(n_features))
+#     Raises:
+#         ValueError: If ``dag`` is combined with ``condition_on_all_features=True``,
+#             contains a cycle, or does not specify every feature.
+#     """
+#     n_features = X.shape[1]
+#     all_features = list(range(n_features))
 
-    X_fit = self.X_
-    impute_X = copy.deepcopy(X)
+#     X_fit = self.X_
+#     impute_X = copy.deepcopy(X)
 
-    # When a DAG is supplied, take a local copy (no caller mutation) and a
-    # topological order; iterate parents before children.
-    full_dag: dict[int, list[int]] | None = None
-    topo_order: list[int] | None = None
-    if dag is not None:
-        if condition_on_all_features:
-            raise ValueError(
-                "`dag` is mutually exclusive with `condition_on_all_features=True`;"
-                " pass condition_on_all_features=False when supplying a DAG."
-            )
-        topo_order, full_dag = _resolve_dag_order(dag, all_features)
+#     # When a DAG is supplied, take a local copy (no caller mutation) and a
+#     # topological order; iterate parents before children.
+#     full_dag: dict[int, list[int]] | None = None
+#     topo_order: list[int] | None = None
+#     if dag is not None:
+#         if condition_on_all_features:
+#             raise ValueError(
+#                 "`dag` is mutually exclusive with `condition_on_all_features=True`;"
+#                 " pass condition_on_all_features=False when supplying a DAG."
+#             )
+#         topo_order, full_dag = _resolve_dag_order(dag, all_features)
 
-    columns_with_nan = [
-        col_idx
-        for col_idx in all_features
-        if torch.isnan(impute_X[:, col_idx]).any()
-    ]
-    if topo_order is not None:
-        with_nan_set = set(columns_with_nan)
-        columns_with_nan = [c for c in topo_order if c in with_nan_set]
+#     columns_with_nan = [
+#         col_idx
+#         for col_idx in all_features
+#         if torch.isnan(impute_X[:, col_idx]).any()
+#     ]
+#     if topo_order is not None:
+#         with_nan_set = set(columns_with_nan)
+#         columns_with_nan = [c for c in topo_order if c in with_nan_set]
 
-    for column_idx in tqdm(columns_with_nan):
-        y_predict = impute_X[:, column_idx]
-        if full_dag is not None:
-            conditional_idx = full_dag[column_idx]
-        elif not condition_on_all_features:
-            conditional_idx = all_features[:column_idx] if column_idx > 0 else []
-        else:
-            conditional_idx = list(set(range(X.shape[1])) - {column_idx})
+#     for column_idx in tqdm(columns_with_nan):
+#         y_predict = impute_X[:, column_idx]
+#         if full_dag is not None:
+#             conditional_idx = full_dag[column_idx]
+#         elif not condition_on_all_features:
+#             conditional_idx = all_features[:column_idx] if column_idx > 0 else []
+#         else:
+#             conditional_idx = list(set(range(X.shape[1])) - {column_idx})
 
-        X_where_y_is_nan = impute_X[torch.isnan(y_predict)]
-        X_where_y_is_nan = X_where_y_is_nan.reshape(-1, impute_X.shape[1])
+#         X_where_y_is_nan = impute_X[torch.isnan(y_predict)]
+#         X_where_y_is_nan = X_where_y_is_nan.reshape(-1, impute_X.shape[1])
 
-        densities: list[Any] = []
-        # Use fewer permutations in fast mode
-        actual_n_permutations = 1 if fast_mode else n_permutations
+#         densities: list[Any] = []
+#         # Use fewer permutations in fast mode
+#         actual_n_permutations = 1 if fast_mode else n_permutations
 
-        for perm in efficient_random_permutation(
-            conditional_idx,
-            actual_n_permutations,
-        ):
-            perm = (*perm, column_idx)
-            _, pred = self.impute_single_permutation_(
-                X_where_y_is_nan,
-                perm,
-                t,
-                condition_on_all_features,
-            )
-            densities.append(pred)
+#         for perm in efficient_random_permutation(
+#             conditional_idx,
+#             actual_n_permutations,
+#         ):
+#             perm = (*perm, column_idx)
+#             _, pred = self.impute_single_permutation_(
+#                 X_where_y_is_nan,
+#                 perm,
+#                 t,
+#                 condition_on_all_features,
+#             )
+#             densities.append(pred)
 
-        if not self.use_classifier_(column_idx, X_fit[:, column_idx]):
-            pred_merged = densities[0][
-                "criterion"
-            ].average_bar_distributions_into_this(
-                [d["criterion"] for d in densities],
-                [
-                    d["logits"].clone().detach()
-                    if torch.is_tensor(d["logits"])
-                    else torch.tensor(d["logits"])
-                    for d in densities
-                ],
-            )
-            pred_sampled = densities[0]["criterion"].sample(pred_merged, t=t)
-        else:
-            # Convert numpy arrays to tensors if necessary before stacking
-            tensor_densities = [
-                torch.as_tensor(d, dtype=torch.float32) for d in densities
-            ]
-            pred = torch.stack(tensor_densities).mean(dim=0)
-            pred_sampled = (
-                torch.distributions.Categorical(probs=pred).sample().float()
-            )
+#         if not self.use_classifier_(column_idx, X_fit[:, column_idx]):
+#             pred_merged = densities[0][
+#                 "criterion"
+#             ].average_bar_distributions_into_this(
+#                 [d["criterion"] for d in densities],
+#                 [
+#                     d["logits"].clone().detach()
+#                     if torch.is_tensor(d["logits"])
+#                     else torch.tensor(d["logits"])
+#                     for d in densities
+#                 ],
+#             )
+#             pred_sampled = densities[0]["criterion"].sample(pred_merged, t=t)
+#         else:
+#             # Convert numpy arrays to tensors if necessary before stacking
+#             tensor_densities = [
+#                 torch.as_tensor(d, dtype=torch.float32) for d in densities
+#             ]
+#             pred = torch.stack(tensor_densities).mean(dim=0)
+#             pred_sampled = (
+#                 torch.distributions.Categorical(probs=pred).sample().float()
+#             )
 
-        pred_sampled = pred_sampled.to(y_predict.dtype).to(y_predict.device)
+#         pred_sampled = pred_sampled.to(y_predict.dtype).to(y_predict.device)
 
-        impute_X[torch.isnan(y_predict), column_idx] = pred_sampled
+#         impute_X[torch.isnan(y_predict), column_idx] = pred_sampled
 
-    return impute_X
-
-
-def impute_single_permutation_(
-        self,
-        X: torch.Tensor,
-        feature_permutation: list[int] | tuple[int, ...],
-        t: float = 0.000000001,
-        condition_on_all_features: bool = True,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Impute missing values (np.nan) in X by sampling all cells independently from the trained models.
-
-    :param X: Input data of the shape (num_examples, num_features) with missing values encoded as np.nan
-    :param t: Temperature for sampling from the imputation distribution, lower values are more deterministic
-    :return: Imputed data, with missing values replaced
-    """
-    X_fit = self.X_
-    impute_X = copy.deepcopy(X)
-
-    for _, i in enumerate(feature_permutation):
-        column_idx = feature_permutation[i]
-
-        if not condition_on_all_features:
-            conditional_idx = feature_permutation[:i] if i > 0 else []
-        else:
-            conditional_idx = list(set(range(X.shape[1])) - {column_idx})
-
-        y_predict = impute_X[:, column_idx]
-
-        if torch.isnan(y_predict).sum() == 0:
-            continue
-
-        X_where_y_is_nan = impute_X[torch.isnan(y_predict)]
-        X_where_y_is_nan = X_where_y_is_nan.reshape(-1, impute_X.shape[1])
-
-        model, X_predict, _ = self.density_(
-            X_where_y_is_nan,
-            X_fit,
-            conditional_idx,
-            column_idx,
-        )
-
-        pred, pred_sampled = self.sample_from_model_prediction_(
-            column_idx,
-            X_fit,
-            model,
-            X_predict,
-            t,
-        )
-
-        pred_sampled = pred_sampled.to(y_predict.dtype).to(y_predict.device)
-
-        impute_X[torch.isnan(y_predict), column_idx] = pred_sampled
-
-    return impute_X, pred
+#     return impute_X
 
 
-def use_classifier_(self, column_idx: int, y: torch.Tensor | np.ndarray) -> bool:
-    """Determine whether to use a classifier or regressor for a feature.
+# def impute_single_permutation_(
+#         self,
+#         X: torch.Tensor,
+#         feature_permutation: list[int] | tuple[int, ...],
+#         t: float = 0.000000001,
+#         condition_on_all_features: bool = True,
+#     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+#     """Impute missing values (np.nan) in X by sampling all cells independently from the trained models.
 
-    Args:
-        column_idx: Index of the column to check
-        y: Values of the feature
+#     :param X: Input data of the shape (num_examples, num_features) with missing values encoded as np.nan
+#     :param t: Temperature for sampling from the imputation distribution, lower values are more deterministic
+#     :return: Imputed data, with missing values replaced
+#     """
+#     X_fit = self.X_
+#     impute_X = copy.deepcopy(X)
 
-    Returns:
-        bool: True if a classifier should be used, False for a regressor
-    """
-    is_categorical = column_idx in self.categorical_features
-    if self.tabpfn_clf is None:
-        # No classifier was provided: surface categorical columns so
-        # density_ raises a clear "missing tabpfn_clf" error rather than
-        # silently routing categorical data to the regressor; numerical
-        # columns go to the regressor as usual.
-        return is_categorical
-    # Use the classifier only when both constraints hold:
-    #   (a) the column is categorical, and
-    #   (b) the classifier can actually predict that many classes
-    #       (a TabPFN clf always reports a limit; None means no inherent
-    #       limit, e.g. a non-TabPFN estimator).
-    max_classes = get_max_num_classes(self.tabpfn_clf)
-    # torch.unique stays on-device; np.unique raises on CUDA/MPS tensors.
-    y_no_nan = y[~y.isnan()]
-    n_unique = torch.unique(y_no_nan).numel() if torch.is_tensor(y_no_nan) else len(np.unique(y))
-    return is_categorical and (max_classes is None or n_unique <= max_classes)
+#     for _, i in enumerate(feature_permutation):
+#         column_idx = feature_permutation[i]
+
+#         if not condition_on_all_features:
+#             conditional_idx = feature_permutation[:i] if i > 0 else []
+#         else:
+#             conditional_idx = list(set(range(X.shape[1])) - {column_idx})
+
+#         y_predict = impute_X[:, column_idx]
+
+#         if torch.isnan(y_predict).sum() == 0:
+#             continue
+
+#         X_where_y_is_nan = impute_X[torch.isnan(y_predict)]
+#         X_where_y_is_nan = X_where_y_is_nan.reshape(-1, impute_X.shape[1])
+
+#         model, X_predict, _ = self.density_(
+#             X_where_y_is_nan,
+#             X_fit,
+#             conditional_idx,
+#             column_idx,
+#         )
+
+#         pred, pred_sampled = self.sample_from_model_prediction_(
+#             column_idx,
+#             X_fit,
+#             model,
+#             X_predict,
+#             t,
+#         )
+
+#         pred_sampled = pred_sampled.to(y_predict.dtype).to(y_predict.device)
+
+#         impute_X[torch.isnan(y_predict), column_idx] = pred_sampled
+
+#     return impute_X, pred
+
+
+# def use_classifier_(self, column_idx: int, y: torch.Tensor | np.ndarray) -> bool:
+#     """Determine whether to use a classifier or regressor for a feature.
+
+#     Args:
+#         column_idx: Index of the column to check
+#         y: Values of the feature
+
+#     Returns:
+#         bool: True if a classifier should be used, False for a regressor
+#     """
+#     is_categorical = column_idx in self.categorical_features
+#     if self.tabpfn_clf is None:
+#         # No classifier was provided: surface categorical columns so
+#         # density_ raises a clear "missing tabpfn_clf" error rather than
+#         # silently routing categorical data to the regressor; numerical
+#         # columns go to the regressor as usual.
+#         return is_categorical
+#     # Use the classifier only when both constraints hold:
+#     #   (a) the column is categorical, and
+#     #   (b) the classifier can actually predict that many classes
+#     #       (a TabPFN clf always reports a limit; None means no inherent
+#     #       limit, e.g. a non-TabPFN estimator).
+#     max_classes = get_max_num_classes(self.tabpfn_clf)
+#     # torch.unique stays on-device; np.unique raises on CUDA/MPS tensors.
+#     y_no_nan = y[~y.isnan()]
+#     n_unique = torch.unique(y_no_nan).numel() if torch.is_tensor(y_no_nan) else len(np.unique(y))
+#     return is_categorical and (max_classes is None or n_unique <= max_classes)
 
 
 #### END MONKEYPATCH FUNCTIONS
@@ -339,30 +340,38 @@ def impute_dataset_tabpfn(
         X_preprocessed = encoder.fit_transform(df_encoded)
 
     # Monkeypatch currently broken methods
-    TabPFNUnsupervisedModel.impute_single_permutation_ = impute_single_permutation_
-    TabPFNUnsupervisedModel.use_classifier_ = use_classifier_
-    TabPFNUnsupervisedModel.impute_ = impute_
+    # TabPFNUnsupervisedModel.impute_single_permutation_ = impute_single_permutation_
+    # TabPFNUnsupervisedModel.use_classifier_ = use_classifier_
+    # TabPFNUnsupervisedModel.impute_ = impute_
 
     # Initialize TabPFN models
-    model_unsupervised = unsupervised.TabPFNUnsupervisedModel(
-        tabpfn_clf=TabPFNClassifier(device=device),
-        tabpfn_reg=TabPFNRegressor(device=device)
-    )
+    # model_unsupervised = unsupervised.TabPFNUnsupervisedModel(
+    #     tabpfn_clf=TabPFNClassifier(device=device),
+    #     tabpfn_reg=TabPFNRegressor(device=device)
+    # )
 
-    model_unsupervised.fit(X_preprocessed.numpy())
+    # model_unsupervised.fit(X_preprocessed.numpy())
 
-    model_unsupervised.set_categorical_features(categorical_features)
+    # model_unsupervised.set_categorical_features(categorical_features)
 
-    synthetic_data_raw = model_unsupervised.impute(
+    # synthetic_data_raw = model_unsupervised.impute(
+    #     X=X_preprocessed.numpy(),
+    #     t=0.000000001, # Use TabPFN default value for imputation
+    #     n_permutations=n_permutations,
+    # ).to(device)
+
+    synthetic_data_raw = simple_impute(
         X=X_preprocessed.numpy(),
-        t=0.000000001, # Use TabPFN default value for imputation
-        n_permutations=n_permutations,
-    ).to(device)
+        tabpfn_clf=TabPFNClassifier(device=device),
+        tabpfn_reg=TabPFNRegressor(device=device),
+        categorical_features=categorical_features,
+        use_imputed=False,
+    )
 
     # Save a raw copy in case inverting the encoder doesn't work
     if save_raw:
-        raw_output_path = os.path.join(output_dir, f"tabpfn_imputed_{dataset_name}_perms_{n_permutations}_raw.csv")
-        synthetic_data_raw.to_csv(raw_output_path)
+        raw_output_path = os.path.join(output_dir, f"tabpfn_imputed_{dataset_name}_perms_{n_permutations}_raw.npy")
+        synthetic_data_raw.save(raw_output_path)
 
     # Restore the original categories
     if use_only_ordinal:
@@ -374,7 +383,7 @@ def impute_dataset_tabpfn(
             synthetic_data = synthetic_data_raw.copy()
             synthetic_data_tensor = torch.tensor(synthetic_data.values)
         else:
-            synthetic_data_tensor = synthetic_data_raw
+            synthetic_data_tensor = torch.from_numpy(synthetic_data_raw).float()
         synthetic_data_df = encoder.reverse_transform(synthetic_data_tensor)
 
     # Save to csv
