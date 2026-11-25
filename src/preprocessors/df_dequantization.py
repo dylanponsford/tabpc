@@ -51,7 +51,7 @@ class Dequantization(Preprocessor):
         if self.parameters["dequantize"]:
             for col, precision in self.parameters["precision"].items():
                 df[col] = df[col] + (np.random.uniform(size=len(df[col])) - 0.5) * (
-                    10 ** -(precision + 1)
+                    10 ** -(precision)
                 )
         self.inversion_check(x_original=x, x_transformed=df)
         return df
