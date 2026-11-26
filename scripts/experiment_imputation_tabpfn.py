@@ -248,14 +248,15 @@ TABPFN_MAX_CATS = 160
 #### END MONKEYPATCH FUNCTIONS
 
 
+
 def impute_dataset_tabpfn(
-        dataset_dir: str,
-        mask_dir: str,
+        data_root: str,
+        dataset: str,
+        mask_type: str,
+        rate: int,
         mask_idx: int,
-        output_data_dir: str,
-        save_raw: bool,
+        imputed_dir: str,
         overwrite: bool,
-        n_permutations: int,
         use_only_ordinal: bool,
         use_train_set_for_conditioning: bool = True,
         device: str | None = None,
@@ -263,25 +264,34 @@ def impute_dataset_tabpfn(
 
     dataset_split = "train" if use_train_set_for_conditioning else "test"
 
+    # Build method name with optional postfix
+    method_name = "tabpfn_3_5"
+    if use_only_ordinal:
+        method_name += "_only_ordinal"
+
+    # Construct paths matching baselines structure
+    dataset_dir = os.path.join(data_root, dataset)
+    mask_dir = os.path.join(data_root, dataset, "masks", f"rate{rate}", mask_type)
     dataset_mask_path = os.path.join(mask_dir, f"{dataset_split}_mask_{mask_idx}.npy")
     dataset_mask = np.load(dataset_mask_path)
 
-    mask_path_items = dataset_mask_path.split(os.sep)
-    mask_type = mask_path_items[-2]
-    missingness_rate = mask_path_items[-3].strip("rate")
-
-    dataset_name = dataset_dir.split(os.sep)[-1]
-
+    # Build directory structure matching baselines:
+    # {imputed_dir}/{dataset}/{split}/{mask_type}/rate{rate}/mask_{mask_idx}/{method}/
     output_dir = os.path.join(
-        output_data_dir,
-        dataset_name,
-        "TabPFN-3.5",
-        f"{mask_type}_{missingness_rate}_{mask_idx}"
+        imputed_dir,
+        dataset,
+        dataset_split,
+        mask_type,
+        f"rate{rate}",
+        f"mask_{mask_idx}",
+        method_name
     )
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Filename matching baselines pattern: imputed_{method}_{dataset}_{type}_{rate}_{mask}.csv
     output_path = os.path.join(
         output_dir,
-        f"tabpfn_{dataset_name}_{dataset_split}_perms_{n_permutations}.csv"
+        f"imputed_{method_name}_{dataset}_{mask_type}_{rate}_{mask_idx}.csv"
     )
 
     # Check if sample already exists
@@ -290,11 +300,7 @@ def impute_dataset_tabpfn(
         return output_dir
 
     base_df = pd.read_csv(f"{dataset_dir}/{dataset_split}.csv")
-
     df_to_impute = base_df.mask(dataset_mask)
-    df_to_impute.to_csv(os.path.join(output_dir, f"masked_{dataset_split}.csv"), index=False)
-    gt_values = base_df.mask(~dataset_mask)
-    gt_values.to_csv(os.path.join(output_dir, f"gt_{dataset_split}.csv"), index=False)
 
     # Get dataset metadata
     with open(f"{dataset_dir}/info.json") as json_f:
@@ -369,9 +375,7 @@ def impute_dataset_tabpfn(
     )
 
     # Save a raw copy in case inverting the encoder doesn't work
-    if save_raw:
-        raw_output_path = os.path.join(output_dir, f"tabpfn_imputed_{dataset_name}_perms_{n_permutations}_raw.npy")
-        synthetic_data_raw.save(raw_output_path)
+    # Note: save_raw functionality removed to match baselines structure
 
     # Restore the original categories
     if use_only_ordinal:
@@ -394,19 +398,22 @@ def impute_dataset_tabpfn(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic data using TabPFN in the format expected by the repo")
-    parser.add_argument('--dataset-dir', type=str, required=True, help='Folder of the dataset to run the experiment on.')
-    parser.add_argument("--output-data-dir", required=True,
-                        help="The directory in which to store the generated data.")
-    parser.add_argument('--mask-dir', type=str, required=True, help='Folder of the missingness masks (train and test) to run the experiment on.')
-    parser.add_argument('--mask-idx', type=int, required=True, help='Index of the missingness masks to use. (0-9)')
-    parser.add_argument("--save-raw", action="store_true", default=False,
-                        help="Whether to save the raw generated dataset before inverting the encoding. (Default: False)")
+    parser.add_argument('--data-root', type=str, required=True,
+                        help='Root data directory (e.g., data/)')
+    parser.add_argument('--dataset', type=str, required=True,
+                        help='Dataset name (subdirectory in data-root)')
+    parser.add_argument('--mask-type', type=str, required=True,
+                        help='Missingness type (e.g., MCAR, MAR, MNAR)')
+    parser.add_argument('--rate', type=int, required=True,
+                        help='Missingness rate (e.g., 30 for 30%)')
+    parser.add_argument('--mask-idx', type=int, required=True,
+                        help='Index of the missingness mask to use (0-9)')
+    parser.add_argument('--imputed-dir', type=str, required=True,
+                        help='Root directory to save imputed datasets')
     parser.add_argument("--overwrite", action="store_true", default=False,
                         help="Whether to overwrite existing samples with newly generated ones. (Default: False)")
-    parser.add_argument("--n-permutations", type=int, default=3,
-                        help="The number of permutations to use for TabPFN's imputation generation. (Default: 3)")
     parser.add_argument("--use-only-ordinal", action="store_true", default=False,
-                        help="Whether the use TabPC's preprocessing pipeline or just the sklearn OrdinalEncoder. (Default: False)")
+                        help="Whether to use only ordinal encoder instead of TabPC preprocessing. (Default: False)")
     parser.add_argument("--max-failures", type=int, default=3,
                         help="The maximum number of failed generations to allow before skipping to the next sample.")
     parser.add_argument('--use-train-set-for-conditioning', action='store_true', help='Whether to use the train set for conditioning (default: False, which means using the test set for conditioning)')
@@ -417,33 +424,40 @@ if __name__ == "__main__":
 
     dataset_split = "train" if args.use_train_set_for_conditioning else "test"
 
-    print(f"Dataset folder: {args.dataset_dir}. Dataset split: {dataset_split}. \
-          Mask folder: {args.mask_dir}. Mask index: {args.mask_idx}.")
+    print(f"Data root: {args.data_root}. Dataset: {args.dataset}. Split: {dataset_split}.")
+    print(f"Mask type: {args.mask_type}, Rate: {args.rate}, Mask idx: {args.mask_idx}.")
+    print(f"Imputed dir: {args.imputed_dir}.")
+    
     failure_count = 0
     while failure_count < args.max_failures:
         print(f"Failure_count: {failure_count}")
         try:
             start_time = time.time()
             output_dir = impute_dataset_tabpfn(
-                dataset_dir=args.dataset_dir,
-                mask_dir=args.mask_dir,
+                data_root=args.data_root,
+                dataset=args.dataset,
+                mask_type=args.mask_type,
+                rate=args.rate,
                 mask_idx=args.mask_idx,
-                output_data_dir=args.output_data_dir,
-                save_raw=args.save_raw,
+                imputed_dir=args.imputed_dir,
                 overwrite=args.overwrite,
-                n_permutations=args.n_permutations,
                 use_only_ordinal=args.use_only_ordinal,
                 use_train_set_for_conditioning=args.use_train_set_for_conditioning,
                 device=device_string,
             )
             elapsed_time = time.time() - start_time
             dataset_split = "train" if args.use_train_set_for_conditioning else "test"
-            with edit_json(os.path.join(output_dir, "generation_times.json")) as data:
+            # Build method name for timing file
+            method_name = "tabpfn_3_5"
+            if args.use_only_ordinal:
+                method_name += "_only_ordinal"
+            # Save timing with method name in filename
+            timing_file = os.path.join(output_dir, f"generation_times_{method_name}.json")
+            with edit_json(timing_file) as data:
                 data[dataset_split] = elapsed_time
             break
         except Exception as e:
-            print(f"Error for dataset {args.dataset_dir.split(os.sep)[-1]} \
-                  and mask_dir {args.mask_dir}: {e}")
+            print(f"Error for dataset {args.dataset} and mask type {args.mask_type}: {e}")
             failure_count += 1
 
     # try:
