@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import re
 import argparse
 import gc
@@ -61,6 +62,7 @@ from src.preprocessors.df_quantile_normalizer import QuantileNormalizer
 from src.preprocessors.df_dequantization import Dequantization
 from src.preprocessors.string_to_int import StringToInt
 from src.preprocessors.to_tensor import ToTensor
+from src.util import edit_json
 
 # Constants
 DEFAULT_METHODS = ['mean_mode', 'median_mode', 'mice', 'missforest']
@@ -398,6 +400,9 @@ def run_and_save_imputations(
         print(f"{'='*50}")
         
         try:
+            # Track timing for this method
+            start_time = time.time()
+            
             df_imputed = runner.run(input_data, method)
             
             # Reverse preprocessing if it was applied
@@ -411,6 +416,13 @@ def run_and_save_imputations(
             
             df_imputed.to_csv(output_path, index=False)
             saved_files[method] = output_path
+            
+            # Save timing for this method
+            elapsed_time = time.time() - start_time
+            timing_file = os.path.join(method_dir, f"generation_times_{method}{preprocessing}.json")
+            with edit_json(timing_file) as data:
+                data[split] = elapsed_time
+            
             print(f"Saved imputed dataset to: {output_path}")
             
             del df_imputed
